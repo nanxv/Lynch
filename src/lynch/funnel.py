@@ -86,6 +86,24 @@ def rank_and_cap(
     return ai_group[:max_count], ai_group[max_count:]
 
 
+def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple[bool, str]:
+    """判定是否为"值得深挖的优质股"（林奇式买入候选）。返回 (是否推荐, 一句理由)。
+
+    条件：无致命红灯 且 (PEG 在 0~1 之间[估值被增长覆盖] 且 低负债 且 正自由现金流)。
+    """
+    if fatal:
+        return False, ""
+    debt = m.by_key("debt")
+    fcf = m.by_key("fcf")
+    debt_ok = debt is not None and debt.flag == "green"
+    fcf_ok = fcf is not None and fcf.flag == "green"
+    peg = m.peg
+    if peg is not None and 0 < peg <= 1.0 and debt_ok and fcf_ok:
+        tier = "极佳(PEG≤0.5)" if peg <= 0.5 else "合理"
+        return True, f"PEG {peg:.2f}·{tier}｜低负债｜正现金流"
+    return False, ""
+
+
 def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
     """提取"故事变坏"的致命量化红灯。空列表表示暂无硬伤。"""
     reasons: list[str] = []

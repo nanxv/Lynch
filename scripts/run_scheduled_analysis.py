@@ -42,7 +42,7 @@ from src.lynch.agent import LynchAnalysis  # noqa: E402
 from src.lynch.config import correct_ticker  # noqa: E402
 from src.lynch.data.base import QuickScreen  # noqa: E402
 from src.lynch.fundamentals import FundamentalsError  # noqa: E402
-from src.lynch.funnel import fatal_warnings, first_funnel, rank_and_cap  # noqa: E402
+from src.lynch.funnel import fatal_warnings, first_funnel, is_quality_pick, rank_and_cap  # noqa: E402
 from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.universe import get_universe  # noqa: E402
 
@@ -153,17 +153,35 @@ def _render_error(ticker: str, name: str, err: str) -> str:
     return f"## {ticker} — {name}\n\n> ❌ 分析失败：{err}\n\n---"
 
 
-def _red_flag_block(reds: dict[str, list[str]]) -> str:
-    """置顶「本周 🔴 红灯排雷标的」高能预警板块（日报/周报通用）。"""
+def _red_flag_block(reds: list[tuple[str, str, list[str]]]) -> str:
+    """置顶「🔴 致命红灯排雷」高能预警板块（日报/周报通用）。"""
     if not reds:
-        return (
-            "> **🟢 全场无致命红灯** —— 本次扫描的标的暂未触发存货暴增/负债超标/增长暴跌。\n\n---\n\n"
+        return "> **🟢 全场无致命红灯** —— 本次扫描的标的暂未触发存货暴增/负债超标/增长暴跌。\n\n---\n\n"
+    lines = [f"> ## 🔴🔴 致命红灯排雷（{len(reds)}只 · 置顶必看）", ">"]
+    for ticker, name, reasons in reds:
+        lines.append(
+            f"> - <b style=\"color:#c0392b\">🔴 {ticker}｜{name}</b>：**{ '；'.join(reasons) }**"
         )
-    lines = ["> ## 🔴🔴 致命红灯排雷（置顶必看）", ">"]
-    for ticker, reasons in reds.items():
-        lines.append(f"> - <b style=\"color:#c0392b\">🔴 {ticker}</b>：**{ '；'.join(reasons) }**")
     lines.append(">")
     lines.append("> *即使是你原本看好的股票，一旦基本面故事变坏，也会第一时间出现在这里。*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _recommend_block(recs: list[tuple[str, str, float | None, str]]) -> str:
+    """置顶「🟢 推荐深挖的优质股」板块（PEG 从低到高，估值最划算优先）。"""
+    if not recs:
+        return (
+            "> ## 🟢 推荐深挖的优质股\n>\n"
+            "> 本次扫描暂无同时满足「PEG≤1 + 低负债 + 正现金流」的标的。宁可空仓，不追贵股。\n\n---\n\n"
+        )
+    lines = [f"> ## 🟢🟢 推荐深挖的优质股（{len(recs)}只 · 估值划算优先）", ">"]
+    for ticker, name, _peg, reason in recs:
+        lines.append(f"> - <b style=\"color:#1e8449\">🟢 {ticker}｜{name}</b>：{reason}")
+    lines.append(">")
+    lines.append("> *这些是「故事好+数字便宜」的候选；买入前请做 2 分钟演练，用大白话讲清买入理由。*")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -222,7 +240,8 @@ def main() -> int:
 
     counts = {"analyzed": 0, "ai": 0, "data_only": 0}
     sections: list[str] = []
-    reds: dict[str, list[str]] = {}
+    reds: list[tuple[str, str, list[str]]] = []
+    recs: list[tuple[str, str, float | None, str]] = []
 
     for q in working:
         name = watch.get(q.ticker, (q.name or q.ticker, ""))[0]
@@ -232,10 +251,14 @@ def main() -> int:
             a = analyze_company(q.ticker, user_note=note, data_only=not use_ai, provider=provider)
             counts["analyzed"] += 1
             counts["ai" if use_ai else "data_only"] += 1
+            display_name = a.fundamentals.name or name
 
             fw = fatal_warnings(a.fundamentals, a.metrics)
             if fw:
-                reds[q.ticker] = fw
+                reds.append((q.ticker, display_name, fw))
+            ok, reason = is_quality_pick(a.fundamentals, a.metrics, fw)
+            if ok:
+                recs.append((q.ticker, display_name, a.metrics.peg, reason))
 
             if weekly:
                 sections.append(_render_weekly(a, q.is_priority))
@@ -254,17 +277,27 @@ def main() -> int:
             print(f"  ❌ {q.ticker} 意外错误：{exc}\n{traceback.format_exc()}")
             sections.append(_render_error(q.ticker, name, f"意外错误: {exc}"))
 
+    # 优质股按 PEG 从低到高排序，最多展示 20 只
+    recs.sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+    recs = recs[:20]
+
     date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
     subject = (
         f"【彼得林奇深度分析】周报 - {date_str}"
         if weekly
         else f"【彼得林奇自选股监控】日报 - {date_str}"
     )
-    # 主题带上红灯数量，手机推送一眼可见
+    # 主题带上优质股/红灯数量，手机推送一眼可见
+    tags = []
+    if recs:
+        tags.append(f"🟢{len(recs)}只优质")
     if reds:
-        subject += f"（🔴{len(reds)}只排雷）"
+        tags.append(f"🔴{len(reds)}只排雷")
+    if tags:
+        subject += "（" + "·".join(tags) + "）"
 
-    briefing = build_briefing(args.mode, date_str, _red_flag_block(reds), sections, stats, counts)
+    top_block = _recommend_block(recs) + _red_flag_block(reds)
+    briefing = build_briefing(args.mode, date_str, top_block, sections, stats, counts)
 
     print("\n" + "=" * 60)
     print(f"主题：{subject}")
