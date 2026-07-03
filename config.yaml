@@ -1,0 +1,20 @@
+strategy:
+  ma_weeks: 10
+  ma_days: 20
+  deviation_exclude_pct: 15.0
+  tier1_deviation_min_pct: -2.0
+  tier1_deviation_max_pct: 2.0
+
+markets:
+  JP:
+    index: "^N225"
+    name: "日经 225"
+  US:
+    index: "^GSPC"
+    name: "标普 500"
+
+notifications:
+  telegram_enabled: true
+  dedup_ttl_hours: 24
+  alert_cache_path: ".alert_cache.json"
+  footer_hint: "*系统提示：请核对账户可用现金流，如资金不足请考虑 S株/碎股 购买或放弃本次信号。*"

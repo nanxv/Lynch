@@ -1,0 +1,18 @@
+stocks:
+  - ticker: "4063.T"
+    name: "信越化学"
+    market: JP
+    tier: 1
+    note: "核心池 — 验证周线铁底回踩"
+
+  - ticker: "AMD"
+    name: "AMD"
+    market: US
+    tier: 2
+    note: "常规池 — 验证战术血坑"
+
+  - ticker: "6859.T"
+    name: "TOWA"
+    market: JP
+    tier: 2
+    note: "常规池 — 验证战术血坑"

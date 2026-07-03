@@ -1,0 +1,26 @@
+# 铁律 2.5 监控 Agent — crontab 示例
+# 安装：crontab -e ，将下方内容粘贴进去（路径按本机调整）
+# 查看：crontab -l
+#
+# 说明：cron 使用系统本地时区。请确认 Mac 时区为 Asia/Tokyo (JST)。
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+PROJECT=/Users/chy5tk/Projects/stock-monitor
+PYTHON=/Users/chy5tk/Projects/stock-monitor/.venv/bin/python
+
+# ── 日股：盘前宏观筛选 (JST 08:30, 周一至周五) ──
+30 8 * * 1-5 cd $PROJECT && $PYTHON -m src.main --market JP
+
+# ── 日股：收盘前战术触发 (JST 14:30, 周一至周五) ──
+30 14 * * 1-5 cd $PROJECT && $PYTHON -m src.main --market JP
+
+# ── 美股：收盘前 30 分钟战术扫描 ──
+# 美东 15:30 = 夏令时 JST 次日 04:30 / 冬令时 JST 次日 05:30
+# 用 ET 时间守卫脚本自动适配夏令时/冬令时，无需每年改 cron。
+# JST 火〜土 04:30 / 05:30 对应美东周一至周五收盘日。
+30 4 * * 2-6 cd $PROJECT && $PYTHON scripts/run_us_close_scan.py
+30 5 * * 2-6 cd $PROJECT && $PYTHON scripts/run_us_close_scan.py
+
+# ── 可选：全市场日终复盘 (JST 18:00) ──
+# 0 18 * * 1-5 cd $PROJECT && $PYTHON -m src.main
