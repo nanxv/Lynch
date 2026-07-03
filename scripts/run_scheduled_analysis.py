@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -239,11 +240,19 @@ def main() -> int:
             if weekly:
                 sections.append(_render_weekly(a, q.is_priority))
             else:
-                change = provider.get_stock_price_change(q.ticker, "5d")
+                change = None
+                try:
+                    change = provider.get_stock_price_change(q.ticker, "5d")
+                except Exception:  # noqa: BLE001
+                    pass
                 sections.append(_render_daily(a, change, q.is_priority))
         except (FundamentalsError, LLMError) as exc:
             print(f"  ❌ {q.ticker}: {exc}")
             sections.append(_render_error(q.ticker, name, str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            # 铁律：单只股票的任何意外错误都不得拖垮整条流水线。
+            print(f"  ❌ {q.ticker} 意外错误：{exc}\n{traceback.format_exc()}")
+            sections.append(_render_error(q.ticker, name, f"意外错误: {exc}"))
 
     date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
     subject = (
