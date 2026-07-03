@@ -5,11 +5,63 @@
 
 from __future__ import annotations
 
+import random
+import time
+
 import pandas as pd
 import yfinance as yf
 
 from ..config import correct_ticker
 from .base import BaseDataProvider, Fundamentals, FundamentalsError, QuickScreen
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+_INFO_RETRIES = 3
+_session = None
+
+
+def _get_session():
+    """浏览器伪装会话：优先 curl_cffi(impersonate)，否则退回带 UA 的 requests。
+
+    云端(数据中心 IP)访问 Yahoo 极易被反爬限流，浏览器指纹能显著降低被封概率。
+    """
+    global _session
+    if _session is not None:
+        return _session
+    try:
+        from curl_cffi import requests as cffi_requests
+
+        _session = cffi_requests.Session(impersonate="chrome")
+    except Exception:  # noqa: BLE001
+        import requests
+
+        _session = requests.Session()
+        _session.headers.update({"User-Agent": _UA})
+    return _session
+
+
+def _ticker(ticker: str) -> yf.Ticker:
+    try:
+        return yf.Ticker(ticker, session=_get_session())
+    except TypeError:
+        return yf.Ticker(ticker)
+
+
+def _fetch_info(ticker: str) -> dict:
+    """带退避重试地获取 .info；连续失败/空数据则抛 FundamentalsError。"""
+    last: object = "unknown"
+    for attempt in range(_INFO_RETRIES):
+        try:
+            info = _ticker(ticker).info or {}
+            if info and (info.get("regularMarketPrice") is not None or info.get("longName")):
+                return info
+            last = "空数据(可能被限流)"
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+        time.sleep(1.5 * (attempt + 1) + random.random())
+    raise FundamentalsError(f"{ticker}: 无法获取 info（{last}）")
 
 
 def _row_series(df: pd.DataFrame | None, *names: str) -> dict[int, float]:
@@ -40,14 +92,8 @@ class YahooFinanceProvider(BaseDataProvider):
 
     def _fetch_fundamentals(self, ticker: str) -> Fundamentals:
         ticker = correct_ticker(ticker)
-        tk = yf.Ticker(ticker)
-        try:
-            info = tk.info or {}
-        except Exception as exc:  # noqa: BLE001
-            raise FundamentalsError(f"{ticker}: 无法获取 info ({exc})") from exc
-
-        if not info or (info.get("regularMarketPrice") is None and not info.get("longName")):
-            raise FundamentalsError(f"{ticker}: Yahoo 返回空数据，代码可能有误")
+        info = _fetch_info(ticker)
+        tk = _ticker(ticker)
 
         try:
             income = tk.income_stmt
@@ -89,8 +135,8 @@ class YahooFinanceProvider(BaseDataProvider):
     def get_quick_screen(self, ticker: str) -> QuickScreen | None:
         ticker = correct_ticker(ticker)
         try:
-            info = yf.Ticker(ticker).info or {}
-        except Exception:  # noqa: BLE001
+            info = _fetch_info(ticker)
+        except FundamentalsError:
             return None
         if not info:
             return None
@@ -129,7 +175,7 @@ class YahooFinanceProvider(BaseDataProvider):
     def get_stock_price_change(self, ticker: str, period: str = "5d") -> float | None:
         ticker = correct_ticker(ticker)
         try:
-            hist = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
+            hist = _ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
         except Exception:  # noqa: BLE001
             return None
         col = "Close" if "Close" in hist.columns else ("Adj Close" if "Adj Close" in hist.columns else None)
