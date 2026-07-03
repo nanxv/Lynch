@@ -1,11 +1,12 @@
 name: Lynch Analysis (Email)
 
+# ── 运行频次铁律：只有两种静默节奏，坚决拒绝任何盘中实时告警/高频轮询 ──
 # GitHub Actions 的 cron 一律使用 UTC。
 #   Daily 日报: '0 21 * * 1-5' = UTC 周一~周五 21:00（美股当日收盘后）
-#                              = 日本时间(JST) 周二~周六 06:00  ← 覆盖「周二至周六」
+#                              = 日本时间(JST) 周二~周六 06:00
 #   Weekly 周报: '0 3 * * 6'   = UTC 周六 03:00（美股周五收盘后）
 #                              = 日本时间(JST) 周六 12:00
-# 通过 github.event.schedule 判断本次由哪条 cron 触发，从而选择 daily / weekly 模式。
+# 通过 github.event.schedule 判断由哪条 cron 触发，选择 daily / weekly。
 on:
   schedule:
     - cron: "0 21 * * 1-5"
@@ -16,15 +17,19 @@ on:
         description: "运行模式 (daily / weekly)"
         required: false
         default: "daily"
+      scope:
+        description: "范围 (watchlist / full 全市场双层漏斗)"
+        required: false
+        default: "full"
       market:
-        description: "扫描市场 (ALL / JP / US)"
+        description: "市场 (ALL / JP / US)"
         required: false
         default: "ALL"
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,8 +56,16 @@ jobs:
 
       - name: Run Lynch pipeline
         env:
+          # 数据源 / 漏斗 / 成本熔断
+          DATA_PROVIDER: ${{ vars.DATA_PROVIDER }}
+          UNIVERSE_SOURCES: ${{ vars.UNIVERSE_SOURCES }}
+          MAX_UNIVERSE_SCAN: ${{ vars.MAX_UNIVERSE_SCAN }}
+          MAX_AI_ANALYSIS_COUNT: ${{ vars.MAX_AI_ANALYSIS_COUNT }}
+          AI_SORT_KEY: ${{ vars.AI_SORT_KEY }}
+          # Claude
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+          # 邮件 SMTP
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -61,4 +74,5 @@ jobs:
         run: |
           python scripts/run_scheduled_analysis.py \
             --mode "${{ steps.mode.outputs.value }}" \
+            --scope "${{ github.event.inputs.scope || 'full' }}" \
             --market "${{ github.event.inputs.market || 'ALL' }}"

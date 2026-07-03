@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import llm
-from .fundamentals import Fundamentals, fetch_fundamentals
+from .data import Fundamentals, get_provider
+from .data.base import BaseDataProvider
 from .metrics import LynchMetrics, compute_metrics
 from .prompt import SYSTEM_PROMPT
 
@@ -86,9 +87,10 @@ def analyze_company(
     user_note: str = "",
     data_only: bool = False,
     model: str | None = None,
+    provider: BaseDataProvider | None = None,
 ) -> LynchAnalysis:
     """完整分析一家公司。data_only=True 时跳过 LLM，仅返回硬指标数据区块。"""
-    f = fetch_fundamentals(ticker)
+    f = (provider or get_provider()).get_fundamentals(ticker)
     m = compute_metrics(f)
     data_block = build_data_block(f, m)
 

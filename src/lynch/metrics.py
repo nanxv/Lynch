@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .fundamentals import Fundamentals
+from .data.base import Fundamentals
 
 
 @dataclass(frozen=True)
