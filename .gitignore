@@ -1,7 +1,8 @@
 .venv/
 .env
 .alert_cache.json
-data/
+# 只忽略根目录的数据库文件夹，避免误伤 src/lynch/data/ 等代码包
+/data/
 __pycache__/
 *.pyc
 .DS_Store
