@@ -56,7 +56,8 @@ from src.lynch.signals import (  # noqa: E402
     SIGNAL_UNKNOWN_COLOR,
     SIGNAL_UNKNOWN_LABEL,
     SIGNAL_UNKNOWN,
-    resolve_action_signal,
+    extract_signal,
+    fcf_yield,
 )
 from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.universe import get_universe  # noqa: E402
@@ -103,7 +104,7 @@ _SUBJECT_PREFIX = {
 _SIGNAL_UNKNOWN_ORDER = SIGNAL_UNKNOWN
 
 
-def _verdict_dashboard(verdicts: list[tuple[int, str, str, str, str, str, bool]]) -> str:
+def _verdict_dashboard(verdicts: list[tuple]) -> str:
     """双轨 AI 裁决看板（委托 notify 模块渲染）。"""
     return notify.render_dual_track_verdict_dashboard(verdicts)
 
@@ -363,15 +364,19 @@ def main() -> int:
                     cycs.append((q.ticker, display_name, cyc))
 
             if ai_mode:
-                sig = resolve_action_signal(a.narrative, a.metrics)
+                sig = extract_signal(a.narrative)
+                peg = a.metrics.peg
+                fcf_y = fcf_yield(a.fundamentals.market_cap, a.fundamentals.free_cashflow)
                 if sig:
                     order, label, color, sig_reason = sig
-                    verdicts.append((order, q.ticker, display_name, label, color, sig_reason, sbi_ok))
+                    verdicts.append((
+                        order, q.ticker, display_name, label, color, sig_reason, sbi_ok, peg, fcf_y,
+                    ))
                     entries.append((order, seq, _render_weekly(a, q.is_priority, label), sbi_ok))
                 elif a.narrative:
                     verdicts.append((
                         _SIGNAL_UNKNOWN_ORDER, q.ticker, display_name,
-                        _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, "", sbi_ok,
+                        _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, "", sbi_ok, peg, fcf_y,
                     ))
                     entries.append((_SIGNAL_UNKNOWN_ORDER, seq, _render_weekly(a, q.is_priority), sbi_ok))
                 else:

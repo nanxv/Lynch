@@ -62,7 +62,9 @@ def _markdown_to_html(md: str) -> str:
 
 
 # ── 双轨报告渲染（SBI 免税直通车 vs 硬核场外深挖）────────────────
-# VerdictRow = (优先级, ticker, name, 标签, 配色, 理由, sbi_tradable)
+# VerdictRow = (优先级, ticker, name, 标签, 配色, 理由, sbi_tradable, peg, fcf_yield)
+from .signals import SIGNAL_BUY, format_lynch_metrics, lynch_buy_sort_key
+
 _VERDICT_SIGNAL_SPECS = [
     (0, "🟢 强烈买入 (BUY NOW)", "#1e8449"),
     (1, "🟡 放入观察仓 (WATCHLIST)", "#b9770e"),
@@ -76,19 +78,19 @@ _HARDCORE_MAX_ORDER = 2  # 硬核区只展示 买入/观察/持有
 
 
 def _render_verdict_groups(
-    verdicts: list[tuple[int, str, str, str, str, str, bool]],
+    verdicts: list[tuple],
     *,
     title: str,
     empty_note: str,
     filter_fn,
 ) -> list[str]:
-    """按信号优先级分组渲染一个赛道内的裁决列表。"""
+    """按信号优先级分组渲染；🟢 强烈买入组内按林奇 PEG/FCF 排行。"""
     filtered = [v for v in verdicts if filter_fn(v)]
     if not filtered:
         return [f"> {empty_note}", ">"]
-    groups: dict[int, list[tuple[str, str, str, str, str]]] = {}
-    for order, ticker, name, label, color, reason, _sbi in filtered:
-        groups.setdefault(order, []).append((ticker, name, label, color, reason))
+    groups: dict[int, list[tuple[str, str, str, str, str, float | None, float | None]]] = {}
+    for order, ticker, name, label, color, reason, _sbi, peg, fcf_y in filtered:
+        groups.setdefault(order, []).append((ticker, name, label, color, reason, peg, fcf_y))
     lines = [f"> ### {title}（{len(filtered)}只）", ">"]
     ordered = [(o, lab, col) for o, lab, col in _VERDICT_SIGNAL_SPECS]
     ordered.append((_VERDICT_UNKNOWN_ORDER, _VERDICT_UNKNOWN_LABEL, _VERDICT_UNKNOWN_COLOR))
@@ -96,16 +98,27 @@ def _render_verdict_groups(
         members = groups.get(order)
         if not members:
             continue
+        if order == SIGNAL_BUY:
+            members = sorted(
+                members,
+                key=lambda m: lynch_buy_sort_key(m[5], m[6], m[0]),
+            )
         lines.append(f'> **<span style="color:{color}">{label} · {len(members)}只</span>**')
-        for ticker, name, _label, _color, reason in members:
+        for ticker, name, _label, _color, reason, peg, fcf_y in members:
             tail = f"：{reason}" if reason else ""
-            lines.append(f'> - <b style="color:{color}">{ticker}｜{name}</b>{tail}')
+            if order == SIGNAL_BUY:
+                metrics_tag = format_lynch_metrics(peg, fcf_y)
+                lines.append(
+                    f'> - {metrics_tag} <b style="color:{color}">{ticker} - {name}</b>{tail}'
+                )
+            else:
+                lines.append(f'> - <b style="color:{color}">{ticker}｜{name}</b>{tail}')
         lines.append(">")
     return lines
 
 
 def render_dual_track_verdict_dashboard(
-    verdicts: list[tuple[int, str, str, str, str, str, bool]],
+    verdicts: list[tuple],
 ) -> str:
     """双轨 AI 裁决看板：SBI 免税直通车 + 硬核场外深挖。"""
     if not verdicts:
