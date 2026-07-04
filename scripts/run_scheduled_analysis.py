@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """彼得·林奇自动化流水线（GitHub Actions 后台，邮件版，双层漏斗）。
 
-【运行频次铁律】坚决拒绝任何盘中实时告警/高频轮询。只有两种静默节奏：
-  --mode daily   日报（周二~周六，美股收盘后）：纯代码量化，无 AI，秒级。
-  --mode weekly  周报（周六中午）：全套 Claude 四步叙述与裁决 + 成本熔断。
+【立体化投研周期】坚决拒绝盘中实时告警/高频轮询，只有四种静默节奏：
+  --mode daily      日报（周二~周六，美股收盘后）：纯代码量化，不调用 Gemini，秒级。
+                    重点抓「单日暴跌>5%（特价机会）」「存货暴增（红灯）」。
+  --mode weekly     周报（每周六）：启动 Gemini，对初筛前 N 只做完整林奇四步裁决 + 成本熔断。
+  --mode quarterly  财报季会诊（1/4/7/10 月最后一天）：Gemini 侧重资产负债表环比恶化/改善 + CAGR 是否脱轨。
+  --mode annual     年终审视（12/31）：Gemini 做持仓清理，审视成长性迁移，给出【剔除自选股池名单】。
 
 【双层漏斗 / 沙漏机制】（--scope full 时）：
   全市场成分股(万级) → 第一层纯代码硬指标漏斗(刷掉95%) → 第二层 AI 上限熔断(≤MAX_AI_ANALYSIS_COUNT) → 邮件
@@ -12,7 +15,7 @@
 
 所有凭证/参数均从系统环境变量读取（适配 GitHub Secrets）：
   DATA_PROVIDER / MAX_AI_ANALYSIS_COUNT / UNIVERSE_SOURCES / MAX_UNIVERSE_SCAN / AI_SORT_KEY
-  ANTHROPIC_API_KEY / ANTHROPIC_MODEL
+  GEMINI_API_KEY / GEMINI_MODEL
   SMTP_SERVER / SMTP_PORT / SMTP_USERNAME / SMTP_PASSWORD / RECEIVER_EMAIL
 """
 
@@ -53,6 +56,42 @@ from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.universe import get_universe  # noqa: E402
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
+
+# 需要调用 Gemini 的分析型模式（daily 为纯量化，不调用）。
+_AI_MODES = ("weekly", "quarterly", "annual")
+
+# 各投研周期注入 Gemini 的专项上下文（附加到用户提示，切换关注重点）。
+_MODE_CONTEXT = {
+    "weekly": "",
+    "quarterly": (
+        "现在是【财报季度会诊】时点（季度末总结）。除常规四步裁决外，请重点：\n"
+        "1) 对比本季度【资产负债表】相较此前的恶化/改善——长期负债是否上升、股东权益是否被侵蚀、"
+        "现金是否减少、存货是否堆积；\n"
+        "2) 核查【利润复合增长率(CAGR)】是否较历史轨迹脱轨（明显放缓或异常加速），指出趋势拐点；\n"
+        "3) 若资产负债表出现实质性恶化或增长脱轨，即便股价没动也要提前预警。"
+    ),
+    "annual": (
+        "现在是【年终持仓清理】时点。请以一年为尺度严格重估：\n"
+        "1) 公司分类是否发生迁移——原「快速增长型」是否已退化为「稳定增长型」甚至「衰退型」"
+        "（长期增速掉出 20%~25% 区间即视为降级）；\n"
+        "2) 对已丧失成长性/故事变坏的标的，明确给出【是否剔除自选股池】的结论与理由；\n"
+        "3) 对仍具成长性的标的，确认新一年继续持有或加仓的逻辑。"
+    ),
+}
+
+_MODE_TITLE = {
+    "daily": "自选股监控日报",
+    "weekly": "深度分析周报",
+    "quarterly": "财报季度会诊",
+    "annual": "年终持仓审视",
+}
+
+_SUBJECT_PREFIX = {
+    "daily": "【彼得林奇自选股监控】日报",
+    "weekly": "【彼得林奇深度分析】周报",
+    "quarterly": "【彼得林奇财报季会诊】季报",
+    "annual": "【彼得林奇年终审视】年报",
+}
 
 
 # ── 候选集构建 ─────────────────────────────────────────────────
@@ -145,7 +184,7 @@ def _render_weekly(a: LynchAnalysis, priority: bool) -> str:
     if a.narrative:
         lines.append(a.narrative)
     else:
-        lines.append("> ⚠️ 未配置 ANTHROPIC_API_KEY 或已超 AI 上限，仅硬指标。")
+        lines.append("> ⚠️ 未配置 GEMINI_API_KEY 或已超 AI 上限，仅硬指标。")
         lines.append("")
         lines.append("```")
         lines.append(a.data_block)
@@ -211,7 +250,7 @@ def _cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
 
 def build_briefing(mode, date_str, red_block, sections, stats, counts) -> str:
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M JST")
-    title = "深度分析周报" if mode == "weekly" else "自选股监控日报"
+    title = _MODE_TITLE.get(mode, "自选股监控日报")
     funnel = ""
     if stats.get("universe"):
         funnel = f"｜ 漏斗 {stats['universe']}→{stats['survivors']}只"
@@ -231,7 +270,8 @@ def build_briefing(mode, date_str, red_block, sections, stats, counts) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="彼得·林奇自动化流水线（双层漏斗·邮件版）")
-    parser.add_argument("--mode", choices=["daily", "weekly"], default="daily")
+    parser.add_argument("--mode", choices=["daily", "weekly", "quarterly", "annual"],
+                        default="daily")
     parser.add_argument("--scope", choices=["watchlist", "full"], default="watchlist",
                         help="watchlist=仅必看列表 / full=全市场双层漏斗")
     parser.add_argument("--market", default="ALL", help="ALL / JP / US")
@@ -241,10 +281,11 @@ def main() -> int:
     args = parser.parse_args()
 
     provider = get_provider()
-    weekly = args.mode == "weekly"
-    ai_available = weekly and llm.is_configured()
-    if weekly and not ai_available:
-        print("⚠️  周报模式但未检测到 ANTHROPIC_API_KEY，本次全部降级为仅硬指标。\n")
+    ai_mode = args.mode in _AI_MODES
+    mode_context = _MODE_CONTEXT.get(args.mode, "")
+    ai_available = ai_mode and llm.is_configured()
+    if ai_mode and not ai_available:
+        print(f"⚠️  {args.mode} 模式但未检测到 GEMINI_API_KEY，本次全部降级为仅硬指标。\n")
 
     print(f"📡 [{args.mode}/{args.scope}] 数据源={provider.name} market={args.market}\n")
     working, watch, stats = _build_working_set(args, provider)
@@ -270,7 +311,10 @@ def main() -> int:
         note = watch.get(q.ticker, ("", ""))[1]
         use_ai = q.ticker in ai_tickers
         try:
-            a = analyze_company(q.ticker, user_note=note, data_only=not use_ai, provider=provider)
+            a = analyze_company(
+                q.ticker, user_note=note, data_only=not use_ai, provider=provider,
+                mode_context=mode_context if use_ai else "",
+            )
             counts["analyzed"] += 1
             counts["ai" if use_ai else "data_only"] += 1
             display_name = a.fundamentals.name or name
@@ -287,7 +331,7 @@ def main() -> int:
                 if cyc:
                     cycs.append((q.ticker, display_name, cyc))
 
-            if weekly:
+            if ai_mode:
                 sections.append(_render_weekly(a, q.is_priority))
             else:
                 change = None
@@ -309,11 +353,7 @@ def main() -> int:
     recs = recs[:20]
 
     date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
-    subject = (
-        f"【彼得林奇深度分析】周报 - {date_str}"
-        if weekly
-        else f"【彼得林奇自选股监控】日报 - {date_str}"
-    )
+    subject = f"{_SUBJECT_PREFIX.get(args.mode, _SUBJECT_PREFIX['daily'])} - {date_str}"
     # 主题带上优质股/红灯数量，手机推送一眼可见
     tags = []
     if recs:

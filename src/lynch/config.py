@@ -35,7 +35,7 @@ FUNNEL_MIN_NETCASH_RATIO = float(os.environ.get("FUNNEL_MIN_NETCASH_RATIO", "0.3
 FUNNEL_MAX_DEBT_RATIO = float(os.environ.get("FUNNEL_MAX_DEBT_RATIO", "0.50"))
 
 # ── 第二层 AI 漏斗：成本熔断 ───────────────────────────────────
-# 每次最多调用 Claude 做完整"四步叙述与裁决"的公司数量硬上限。
+# 每次最多调用 Gemini 做完整"四步叙述与裁决"的公司数量硬上限。
 MAX_AI_ANALYSIS_COUNT = int(os.environ.get("MAX_AI_ANALYSIS_COUNT", "30"))
 # 超额时的排序口径：peg(从低到高，最划算) / net_cash(从高到低，安全垫最厚)
 AI_SORT_KEY = os.environ.get("AI_SORT_KEY", "peg").strip().lower()

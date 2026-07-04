@@ -4,7 +4,7 @@
 用法:
     .venv/bin/python scripts/analyze.py AMD
     .venv/bin/python scripts/analyze.py 4063.T --note "因为我天天用它家的PVC"
-    .venv/bin/python scripts/analyze.py 6859.T --data-only   # 仅看硬指标，不调用 Claude
+    .venv/bin/python scripts/analyze.py 6859.T --data-only   # 仅看硬指标，不调用 Gemini
 """
 
 from __future__ import annotations
@@ -30,14 +30,14 @@ def main() -> int:
     parser.add_argument("ticker", help="股票代码，如 AMD、4063.T、KO")
     parser.add_argument("--note", default="", help="补充说明（例如为什么想买、看中哪个产品）")
     parser.add_argument("--data-only", action="store_true", help="只输出硬指标，不调用 LLM")
-    parser.add_argument("--model", default=None, help="覆盖 Claude 模型名")
+    parser.add_argument("--model", default=None, help="覆盖 Gemini 模型名")
     args = parser.parse_args()
 
     data_only = args.data_only or not is_configured()
     if args.data_only:
         pass
     elif not is_configured():
-        print("⚠️  未检测到 ANTHROPIC_API_KEY，自动切换为 --data-only 模式（仅硬指标）。\n")
+        print("⚠️  未检测到 GEMINI_API_KEY，自动切换为 --data-only 模式（仅硬指标）。\n")
 
     print(f"📡 正在抓取 {args.ticker} 的基本面数据 (Yahoo Finance)...\n")
     try:

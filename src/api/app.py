@@ -110,7 +110,7 @@ def trigger_scan(payload: ScanRequest) -> ScanResponse:
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
-    """彼得·林奇 SOP 分析一家公司（基本面 + 硬指标 + Claude 叙述）。"""
+    """彼得·林奇 SOP 分析一家公司（基本面 + 硬指标 + Gemini 叙述）。"""
     try:
         result = analyze_company(
             payload.ticker, user_note=payload.note, data_only=payload.data_only

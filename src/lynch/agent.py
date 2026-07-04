@@ -1,4 +1,4 @@
-"""编排器：抓基本面 → 算硬指标 → 组装数据区块 → 调 Claude 生成林奇式分析。"""
+"""编排器：抓基本面 → 算硬指标 → 组装数据区块 → 调 Gemini 生成林奇式分析。"""
 
 from __future__ import annotations
 
@@ -95,8 +95,13 @@ def analyze_company(
     data_only: bool = False,
     model: str | None = None,
     provider: BaseDataProvider | None = None,
+    mode_context: str = "",
 ) -> LynchAnalysis:
-    """完整分析一家公司。data_only=True 时跳过 LLM，仅返回硬指标数据区块。"""
+    """完整分析一家公司。data_only=True 时跳过 LLM，仅返回硬指标数据区块。
+
+    mode_context: 投研周期上下文（周报/财报季会诊/年终清理），注入到用户提示中，
+    让 Gemini 针对不同时间节点调整关注重点。
+    """
     f = (provider or get_provider()).get_fundamentals(ticker)
     m = compute_metrics(f)
     data_block = build_data_block(f, m)
@@ -104,9 +109,11 @@ def analyze_company(
     narrative: str | None = None
     if not data_only:
         note = f"\n\n用户补充说明：{user_note}" if user_note.strip() else ""
+        ctx = f"\n\n【本次分析时点专项要求】\n{mode_context}" if mode_context.strip() else ""
         user_content = (
-            f"请按林奇 SOP 分析下面这家公司。\n\n{data_block}{note}\n\n"
-            "请严格引用上面的真实数字，输出四步分析 + 最终裁决。"
+            f"请按林奇 SOP 分析下面这家公司。\n\n{data_block}{note}{ctx}\n\n"
+            "请严格引用上面的真实数字，输出四步分析 + 最终裁决，"
+            "并在最末尾给出唯一的【行动指令】（🟢强烈买入 / 🟡观察仓 / 🔴卖出避开 / ⚪钝感持有）。"
         )
         narrative = llm.generate(SYSTEM_PROMPT, user_content, model=model)
 
