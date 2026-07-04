@@ -129,8 +129,27 @@ class BaseDataProvider(ABC):
 _CYCLICAL_SECTORS = {"Energy", "Basic Materials"}
 _CYCLICAL_HINTS = (
     "Semiconductor", "Auto", "Steel", "Oil", "Gas", "Mining", "Airline",
-    "Chemical", "Shipping", "Aluminum", "Copper", "Homebuild",
+    "Chemical", "Shipping", "Aluminum", "Copper", "Homebuild", "Travel",
+    "Construction", "Metals", "Machinery", "Paper", "Rubber",
 )
+_FINANCIAL_HINTS = ("Bank", "Insurance", "Capital Markets", "Financial", "Mortgage", "Credit")
+
+
+def is_financial(f: "Fundamentals") -> bool:
+    """金融业（银行/保险等）——负债天生极高，需豁免负债排雷。"""
+    if (f.sector or "") == "Financial Services":
+        return True
+    industry = f.industry or ""
+    return any(h in industry for h in _FINANCIAL_HINTS)
+
+
+def is_cyclical(f: "Fundamentals") -> bool:
+    """周期股——高 P/E/亏损/短期利润暴跌往往是底部，需反向判定、豁免常规排雷。"""
+    if is_financial(f):
+        return False
+    sector = f.sector or ""
+    industry = f.industry or ""
+    return sector in _CYCLICAL_SECTORS or any(h in industry for h in _CYCLICAL_HINTS)
 
 
 def _cagr(series: dict[int, float]) -> float | None:

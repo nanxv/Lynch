@@ -24,13 +24,21 @@ class Metric:
 
 @dataclass(frozen=True)
 class LynchMetrics:
-    growth_rate: float | None  # 用于 PEG 的年增长率（小数）
+    growth_rate: float | None  # 长期 CAGR（小数），用于 PEG
     growth_basis: str
-    peg: float | None
+    peg: float | None  # 股息修正 PEG
     metrics: list[Metric] = field(default_factory=list)
+    company_type: str = "稳定增长型"
+    is_financial: bool = False
+    is_cyclical: bool = False
 
     def by_key(self, key: str) -> Metric | None:
         return next((m for m in self.metrics if m.key == key), None)
+
+
+# 林奇：没有公司能长期维持 50%+ 增长；超过则把 PEG 分母锚定到 35% 上限。
+_GROWTH_CAP = 0.35
+_GROWTH_CAP_TRIGGER = 0.50
 
 
 def _cagr(series: dict[int, float]) -> float | None:
@@ -56,45 +64,68 @@ def _yoy(series: dict[int, float]) -> float | None:
 
 
 def _pick_growth(f: Fundamentals) -> tuple[float | None, str]:
-    """林奇 PEG 用的是长期 EPS 增长率；多年 EPS CAGR 优先，其次净利润，再退回同比。"""
+    """林奇 PEG 必须用长期复合增长率(CAGR)，严禁用单季度同比(earningsGrowth)。
+
+    优先多年摊薄 EPS 的 CAGR，其次净利润 CAGR；两者都缺则拒绝计算（不退回单季度同比）。
+    """
     eps_cagr = _cagr(f.eps_series)
     if eps_cagr is not None:
-        n = len(f.eps_series)
-        return eps_cagr, f"{n}年摊薄EPS复合增长率(CAGR)"
+        return eps_cagr, f"{len(f.eps_series)}年摊薄EPS复合增长率(CAGR)"
     ni_cagr = _cagr(f.net_income_series)
     if ni_cagr is not None:
-        n = len(f.net_income_series)
-        return ni_cagr, f"{n}年净利润复合增长率(CAGR)"
-    if f.earnings_growth_yoy is not None:
-        return f.earnings_growth_yoy, "info 提供的盈利同比增长(退回值)"
-    return None, "无可靠增长数据"
+        return ni_cagr, f"{len(f.net_income_series)}年净利润复合增长率(CAGR)"
+    return None, "缺少≥2年年度EPS/净利润，无法算CAGR（拒绝用单季度同比代替）"
 
 
-def _peg_metric(pe: float | None, growth_rate: float | None) -> tuple[float | None, Metric]:
+def _peg_metric(
+    f: Fundamentals, growth_rate: float | None, cyclical: bool
+) -> tuple[float | None, Metric]:
+    """股息修正 PEG = P/E ÷ (CAGR% + 股息率%)，含 35% 增长上限锚定与周期股豁免。"""
+    label = "股息修正PEG (P/E÷(CAGR+股息))"
+    pe = f.trailing_pe
+    div = f.dividend_yield or 0.0  # yfinance 已是百分比
+
     if pe is None or pe <= 0:
-        return None, Metric(
-            "peg", "PEG (市盈率/增长率)", None, "yellow",
-            "缺少有效市盈率（可能亏损或数据缺失），无法计算 PEG。",
+        note = (
+            "周期股：当前亏损/无有效 P/E——很可能正处周期底部，勿当红灯，盯行业库存拐点。"
+            if cyclical
+            else "缺少有效市盈率（可能亏损或数据缺失），无法计算 PEG。"
         )
+        return None, Metric("peg", label, None, "yellow", note)
+
     if growth_rate is None or growth_rate <= 0:
-        return None, Metric(
-            "peg", "PEG (市盈率/增长率)", None, "yellow",
-            "增长率为负或缺失，PEG 失真——这门生意在萎缩，需人工核实。",
+        note = (
+            "周期股：利润下滑致长期增长为负——常是底部信号，交给行业数据判断，勿排雷。"
+            if cyclical
+            else "长期 CAGR 为负或缺失，PEG 失真——这门生意在萎缩，需人工核实。"
         )
-    growth_pct = growth_rate * 100
-    peg = pe / growth_pct
+        return None, Metric("peg", label, None, "yellow", note)
+
+    capped = _GROWTH_CAP if growth_rate > _GROWTH_CAP_TRIGGER else growth_rate
+    denom = capped * 100 + div
+    peg = pe / denom
+    cap_note = "（增速>50%已按上限35%锚定）" if growth_rate > _GROWTH_CAP_TRIGGER else ""
+    div_note = f"（分母含股息{div:.1f}%）" if div > 0 else ""
+
     if peg <= 0.5:
-        flag, note = "green", "PEG≤0.5，市盈率不到增长率一半——林奇眼里的极佳低估。"
+        flag, note = "green", f"股息修正PEG {peg:.2f}≤0.5{div_note}{cap_note}——极佳击球区！"
     elif peg <= 1.0:
-        flag, note = "green", "PEG≤1，市盈率被增长率覆盖，价格合理。"
+        flag, note = "green", f"股息修正PEG {peg:.2f}≤1{div_note}{cap_note}，估值被增长覆盖，合理。"
     elif peg <= 2.0:
-        flag, note = "yellow", "PEG 在 1~2 之间，谈不上便宜，需要故事撑腰。"
+        flag, note = "yellow", f"股息修正PEG {peg:.2f} 在 1~2 之间{div_note}，谈不上便宜。"
+    elif cyclical:
+        flag, note = "yellow", f"股息修正PEG {peg:.2f}>2，但周期股高估值可能是底部，勿盲目排雷。"
     else:
-        flag, note = "red", "PEG>2，市盈率是增长率两倍以上——危险的高估区。"
-    return peg, Metric("peg", "PEG (市盈率/增长率)", round(peg, 2), flag, note)
+        flag, note = "red", f"股息修正PEG {peg:.2f}>2，市盈率远超增长——危险高估区。"
+    return peg, Metric("peg", label, round(peg, 2), flag, note)
 
 
-def _debt_metric(f: Fundamentals) -> Metric:
+def _debt_metric(f: Fundamentals, financial: bool) -> Metric:
+    if financial:
+        return Metric(
+            "debt", "长期负债 / 股东权益", None, "green",
+            "金融业（银行/保险）负债天生极高，按林奇规则完全豁免此项排雷。",
+        )
     ltd, eq = f.long_term_debt, f.stockholders_equity
     if ltd is None or eq is None or eq <= 0:
         return Metric(
@@ -183,11 +214,15 @@ def _fcf_metric(f: Fundamentals) -> Metric:
 
 
 def compute_metrics(f: Fundamentals) -> LynchMetrics:
+    from .data.base import classify_company, is_cyclical, is_financial
+
+    financial = is_financial(f)
+    cyclical = is_cyclical(f)
     growth_rate, basis = _pick_growth(f)
-    peg, peg_metric = _peg_metric(f.trailing_pe, growth_rate)
+    peg, peg_metric = _peg_metric(f, growth_rate, cyclical)
     metrics = [
         peg_metric,
-        _debt_metric(f),
+        _debt_metric(f, financial),
         _inventory_metric(f),
         _net_cash_metric(f),
         _fcf_metric(f),
@@ -197,4 +232,7 @@ def compute_metrics(f: Fundamentals) -> LynchMetrics:
         growth_basis=basis,
         peg=peg,
         metrics=metrics,
+        company_type=classify_company(f),
+        is_financial=financial,
+        is_cyclical=cyclical,
     )

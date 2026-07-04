@@ -105,27 +105,34 @@ def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple
 
 
 def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
-    """提取"故事变坏"的致命量化红灯。空列表表示暂无硬伤。"""
+    """提取"故事变坏"的致命量化红灯。空列表表示暂无硬伤。
+
+    豁免规则：
+    - 金融股（银行/保险）负债天生高，豁免负债红灯。
+    - 周期股：短期利润暴跌/长期增长转负往往是周期底部买点，豁免利润下滑红灯
+      （但存货暴增对周期股恰是见顶卖点，仍保留）。
+    """
     reasons: list[str] = []
 
-    # 1) 存货增速 > 销售增速的 2 倍
+    # 1) 存货增速 > 销售增速的 2 倍（周期股同样适用——存货堆积=见顶卖点）
     inv_yoy = _yoy(f.inventory_series)
     sales_yoy = _yoy(f.revenue_series)
     if inv_yoy is not None and sales_yoy is not None and inv_yoy > 0:
         if inv_yoy > max(sales_yoy, 0) * 2 and inv_yoy - sales_yoy > 0.05:
             reasons.append(f"存货暴增(存货+{inv_yoy:.0%} vs 销售+{sales_yoy:.0%})")
 
-    # 2) 长期负债 / 股东权益 > 1/3
-    if f.long_term_debt is not None and f.stockholders_equity and f.stockholders_equity > 0:
+    # 2) 长期负债 / 股东权益 > 1/3（金融股豁免）
+    if not m.is_financial and f.long_term_debt is not None and f.stockholders_equity and f.stockholders_equity > 0:
         ratio = f.long_term_debt / f.stockholders_equity
         if ratio > 1 / 3:
             reasons.append(f"负债超标(长期负债/权益={ratio:.0%}>33%)")
 
-    # 3) 增长率暴跌
-    if f.earnings_growth_yoy is not None and f.earnings_growth_yoy <= -0.30:
-        reasons.append(f"盈利同比暴跌{f.earnings_growth_yoy:.0%}")
-    elif m.growth_rate is not None and m.growth_rate < 0:
-        reasons.append("长期盈利增长转负")
+    # 3) 增长率暴跌（周期股豁免——底部利润差是买点，非红灯）
+    if not m.is_cyclical:
+        if f.earnings_growth_yoy is not None and f.earnings_growth_yoy <= -0.30:
+            reasons.append(f"盈利同比暴跌{f.earnings_growth_yoy:.0%}")
+        elif m.growth_rate is not None and m.growth_rate < 0:
+            reasons.append("长期盈利增长转负")
 
     return reasons
 

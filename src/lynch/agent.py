@@ -51,12 +51,19 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     lines.append("【已核实的真实财务数据】(来源: %s)" % f.source)
     lines.append(f"公司: {f.name or f.ticker} ({f.ticker})")
     lines.append(f"行业: {f.sector or '?'} / {f.industry or '?'}")
+    tags = [f"代码初判类型: {m.company_type}"]
+    if m.is_financial:
+        tags.append("金融股（负债排雷已豁免）")
+    if m.is_cyclical:
+        tags.append("周期股（高P/E与利润下滑排雷已豁免，反向判定）")
+    lines.append(" | ".join(tags))
     lines.append(f"现价: {_fmt(f.price)} {cur or ''} | 市值: {_fmt(f.market_cap, money=True, currency=cur)}")
     lines.append("")
     lines.append("— 估值与增长 —")
     growth_str = "数据缺失" if m.growth_rate is None else f"{m.growth_rate * 100:.1f}%"
     lines.append(f"市盈率 TTM: {_fmt(f.trailing_pe)} | 预期市盈率: {_fmt(f.forward_pe)}")
-    lines.append(f"PEG 用增长率: {growth_str}  (口径: {m.growth_basis})")
+    lines.append(f"长期增长率(PEG分子用): {growth_str}  (口径: {m.growth_basis})")
+    lines.append("PEG 口径: 股息修正版 = P/E ÷ (长期CAGR% + 股息率%)，增速>50%按35%封顶")
     lines.append(f"营收同比: {_fmt(f.revenue_growth_yoy, pct=True)} | 盈利同比: {_fmt(f.earnings_growth_yoy, pct=True)}")
     lines.append("")
     lines.append("— 多年财报序列 —")
