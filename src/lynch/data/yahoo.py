@@ -193,3 +193,18 @@ class YahooFinanceProvider(BaseDataProvider):
         if len(closes) < 2:
             return None
         return float(closes.iloc[-1] / closes.iloc[0] - 1.0)
+
+    def get_daily_price_change(self, ticker: str) -> float | None:
+        """单日涨跌幅：最近收盘价 / 前一交易日收盘价 - 1。"""
+        ticker = correct_ticker(ticker)
+        try:
+            hist = _ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
+        except Exception:  # noqa: BLE001
+            return None
+        col = "Close" if "Close" in hist.columns else ("Adj Close" if "Adj Close" in hist.columns else None)
+        if col is None:
+            return None
+        closes = hist[col].dropna()
+        if len(closes) < 2:
+            return None
+        return float(closes.iloc[-1] / closes.iloc[-2] - 1.0)

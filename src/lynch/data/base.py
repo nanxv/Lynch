@@ -96,6 +96,10 @@ class BaseDataProvider(ABC):
     def get_stock_price_change(self, ticker: str, period: str = "5d") -> float | None:
         """区间涨跌幅（小数，0.05 = +5%）；用于每日股价异动监控。"""
 
+    @abstractmethod
+    def get_daily_price_change(self, ticker: str) -> float | None:
+        """最近一个交易日相对前一交易日的涨跌幅（小数，-0.05 = 单日跌 5%）。"""
+
     # ── 通用（带缓存）─────────────────────────────────────────
     def get_fundamentals(self, ticker: str) -> Fundamentals:
         key = ticker.upper()

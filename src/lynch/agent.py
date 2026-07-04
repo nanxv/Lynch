@@ -104,6 +104,7 @@ def analyze_company(
     model: str | None = None,
     provider: BaseDataProvider | None = None,
     mode_context: str = "",
+    story_diff_context: str = "",
 ) -> LynchAnalysis:
     """完整分析一家公司。data_only=True 时跳过 LLM，仅返回硬指标数据区块。
 
@@ -118,6 +119,7 @@ def analyze_company(
     if not data_only:
         note = f"\n\n用户补充说明：{user_note}" if user_note.strip() else ""
         ctx = f"\n\n【本次分析时点专项要求】\n{mode_context}" if mode_context.strip() else ""
+        story = f"\n\n{story_diff_context}" if story_diff_context.strip() else ""
         # 本地 RAG：按公司类型/行业检索原著相关片段（无索引/无 key 时降级为空）
         ref = ""
         try:
@@ -128,7 +130,7 @@ def analyze_company(
         except Exception:  # noqa: BLE001
             ref = ""
         user_content = (
-            f"请按林奇 SOP 分析下面这家公司。\n\n{data_block}{note}{ctx}{ref}\n\n"
+            f"请按林奇 SOP 分析下面这家公司。\n\n{data_block}{note}{ctx}{story}{ref}\n\n"
             "请严格引用上面的真实数字，输出四步分析 + 最终裁决，"
             "并在最末尾给出唯一的【行动指令】（🟢强烈买入 / 🟡观察仓 / 🔴卖出避开 / ⚪钝感持有）。"
         )

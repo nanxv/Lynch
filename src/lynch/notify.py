@@ -230,3 +230,24 @@ def send_email(subject: str, markdown_body: str) -> bool:
 
     print(f"✅ 邮件已发送 → {', '.join(receivers)}")
     return True
+
+
+def send_sniper_alert(
+    *,
+    ticker: str,
+    name: str,
+    day_change_pct: str,
+    peg: float | None,
+    price: str,
+    narrative: str,
+) -> bool:
+    """发送日间狙击加急邮件（独立于常规日报/周报）。"""
+    subject = f"【🚨林奇狙击警报】{ticker} 现价已杀入绝佳特价期！"
+    peg_str = f"{peg:.2f}" if peg is not None else "N/A"
+    body = (
+        f"# 🚨 林奇狙击警报 · {ticker} — {name}\n\n"
+        f"**触发条件**：SBI 可交易 ｜ 单日跌幅 {day_change_pct} ｜ 股息修正 PEG {peg_str}\n\n"
+        f"**现价**：{price}\n\n"
+        f"---\n\n{narrative}\n"
+    )
+    return send_email(subject, body)

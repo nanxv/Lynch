@@ -46,12 +46,20 @@ from src.lynch.config import correct_ticker  # noqa: E402
 from src.lynch.data.base import QuickScreen  # noqa: E402
 from src.lynch.fundamentals import FundamentalsError  # noqa: E402
 from src.lynch.funnel import (  # noqa: E402
+    check_daily_sniper_trigger,
     cyclical_watch,
     fatal_warnings,
     first_funnel,
     is_quality_pick,
     rank_and_cap,
 )
+from src.lynch.history import (  # noqa: E402
+    append_record,
+    build_story_diff_context,
+    load_previous,
+    record_from_analysis,
+)
+from src.lynch.sniper import run_sniper_alert  # noqa: E402
 from src.lynch.signals import (  # noqa: E402
     SIGNAL_UNKNOWN_COLOR,
     SIGNAL_UNKNOWN_LABEL,
@@ -342,15 +350,32 @@ def main() -> int:
         name = watch.get(q.ticker, (q.name or q.ticker, ""))[0]
         note = watch.get(q.ticker, ("", ""))[1]
         use_ai = q.ticker in ai_tickers
+        story_ctx = ""
+        if use_ai and ai_mode:
+            prev = load_previous(q.ticker)
+            if prev:
+                story_ctx = build_story_diff_context(prev)
         try:
             a = analyze_company(
                 q.ticker, user_note=note, data_only=not use_ai, provider=provider,
                 mode_context=mode_context if use_ai else "",
+                story_diff_context=story_ctx,
             )
             counts["analyzed"] += 1
             counts["ai" if use_ai else "data_only"] += 1
             display_name = a.fundamentals.name or name
             sbi_ok = a.metrics.sbi_tradable
+
+            try:
+                sig_hist = extract_signal(a.narrative) if a.narrative else None
+                append_record(record_from_analysis(
+                    a.ticker,
+                    a.metrics,
+                    signal_label=sig_hist[1] if sig_hist else None,
+                    signal_order=sig_hist[0] if sig_hist else None,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                print(f"  ⚠️  {q.ticker} 历史存档失败：{exc}")
 
             fw = fatal_warnings(a.fundamentals, a.metrics)
             if fw:
@@ -383,10 +408,26 @@ def main() -> int:
                     entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, _render_weekly(a, q.is_priority), sbi_ok))
             else:
                 change = None
+                day_change = None
                 try:
                     change = provider.get_stock_price_change(q.ticker, "5d")
+                    day_change = provider.get_daily_price_change(q.ticker)
                 except Exception:  # noqa: BLE001
                     pass
+                if (
+                    args.mode == "daily"
+                    and q.is_priority
+                    and check_daily_sniper_trigger(a.fundamentals, a.metrics, day_change)
+                ):
+                    try:
+                        run_sniper_alert(
+                            q.ticker,
+                            provider=provider,
+                            day_change=day_change,
+                            send=not args.no_email,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  ⚠️  {q.ticker} 狙击警报失败：{exc}")
                 entries.append((seq, seq, _render_daily(a, change, q.is_priority), sbi_ok))
         except (FundamentalsError, LLMError) as exc:
             print(f"  ❌ {q.ticker}: {exc}")

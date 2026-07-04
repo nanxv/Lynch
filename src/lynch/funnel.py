@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import config
 from .data.base import BaseDataProvider, Fundamentals, QuickScreen
 from .metrics import LynchMetrics, check_sbi_tradable, check_sbi_tradable_fundamentals
+from .sniper import is_sniper_candidate
 
 
 def is_hardcore_alpha_candidate(sbi_tradable: bool, signal_order: int | None) -> bool:
@@ -177,6 +178,15 @@ def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
             reasons.append("长期盈利增长转负")
 
     return reasons
+
+
+def check_daily_sniper_trigger(
+    f: Fundamentals,
+    m: LynchMetrics,
+    day_change: float | None,
+) -> bool:
+    """日间粗筛拦截器：SBI 自选股暴跌 + 低 PEG 击球区（不改变原有漏斗逻辑）。"""
+    return is_sniper_candidate(f, m, day_change)
 
 
 def _yoy(series: dict[int, float]) -> float | None:

@@ -14,6 +14,7 @@ class LLMError(Exception):
 # 避免空字符串导致 SDK 报 "model is required"。
 _FALLBACK_MODEL = "gemini-2.5-flash"
 DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip()
+SNIPER_DRILL_MAX_TOKENS = 2048  # 日间狙击「两分钟演练」专用上限
 
 
 def is_configured() -> bool:
