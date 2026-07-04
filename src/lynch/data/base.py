@@ -51,6 +51,7 @@ class Fundamentals:
     shares_outstanding: float | None = None
     dividend_yield: float | None = None
     held_percent_institutions: float | None = None
+    exchange: str | None = None
 
     source: str = "base"
 
@@ -62,6 +63,9 @@ class QuickScreen:
     ticker: str
     name: str | None = None
     price: float | None = None
+    market_cap: float | None = None
+    exchange: str | None = None
+    sbi_tradable: bool | None = None
     trailing_pe: float | None = None
     growth_yoy: float | None = None
     quick_peg: float | None = None

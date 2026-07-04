@@ -31,6 +31,7 @@ class LynchMetrics:
     company_type: str = "稳定增长型"
     is_financial: bool = False
     is_cyclical: bool = False
+    sbi_tradable: bool = False
 
     def by_key(self, key: str) -> Metric | None:
         return next((m for m in self.metrics if m.key == key), None)
@@ -39,6 +40,51 @@ class LynchMetrics:
 # 林奇：没有公司能长期维持 50%+ 增长；超过则把 PEG 分母锚定到 35% 上限。
 _GROWTH_CAP = 0.35
 _GROWTH_CAP_TRIGGER = 0.50
+
+# SBI / NISA 免税账户可交易性：纽交所/纳斯达克主板且市值 ≥ 3 亿美元。
+_SBI_MIN_MARKET_CAP = 300_000_000
+_OTC_EXCHANGES = frozenset({"PNK", "OTC", "OOTC", "PNC", "PINK SHEETS"})
+_MAIN_EXCHANGES = frozenset({"NMS", "NYQ", "NGM", "NCM", "NAS", "NYSE", "NASDAQ"})
+
+
+def check_sbi_tradable(
+    ticker: str,
+    *,
+    exchange: str | None = None,
+    market_cap: float | None = None,
+) -> bool:
+    """传统券商（SBI 等）是否可直购：主板 + 市值 ≥ 3 亿美元，排除 OTC/超微盘。
+
+    规则：
+    - 5 位且以 F/Y 结尾 → OTC ADR，不可
+    - 交易所为 PNK/OTC/OOTC/Pink Sheets → 不可
+    - 市值 < 3 亿美元 → 不可
+    - 日股 (.T) → 可（SBI 可交易）
+    - 其余纽交所/纳斯达克主板且市值达标 → 可
+    """
+    t = ticker.strip().upper()
+    if t.endswith(".T"):
+        return True
+    if len(t) == 5 and t.endswith(("F", "Y")):
+        return False
+    ex = (exchange or "").strip().upper()
+    if ex in _OTC_EXCHANGES or "PINK" in ex:
+        return False
+    if market_cap is not None and market_cap < _SBI_MIN_MARKET_CAP:
+        return False
+    if market_cap is not None and market_cap >= _SBI_MIN_MARKET_CAP:
+        if ex and ex not in _MAIN_EXCHANGES:
+            # 有市值但交易所非主板（如 BTS 等）→ 保守判不可
+            if ex in _OTC_EXCHANGES or "PINK" in ex:
+                return False
+        return True
+    if ex in _MAIN_EXCHANGES:
+        return market_cap is None or market_cap >= _SBI_MIN_MARKET_CAP
+    return False
+
+
+def check_sbi_tradable_fundamentals(f: Fundamentals) -> bool:
+    return check_sbi_tradable(f.ticker, exchange=f.exchange, market_cap=f.market_cap)
 
 
 def _cagr(series: dict[int, float]) -> float | None:
@@ -235,4 +281,5 @@ def compute_metrics(f: Fundamentals) -> LynchMetrics:
         company_type=classify_company(f),
         is_financial=financial,
         is_cyclical=cyclical,
+        sbi_tradable=check_sbi_tradable_fundamentals(f),
     )

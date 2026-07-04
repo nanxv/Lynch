@@ -11,7 +11,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import config
 from .data.base import BaseDataProvider, Fundamentals, QuickScreen
-from .metrics import LynchMetrics
+from .metrics import LynchMetrics, check_sbi_tradable, check_sbi_tradable_fundamentals
+
+
+def is_hardcore_alpha_candidate(sbi_tradable: bool, signal_order: int | None) -> bool:
+    """硬核深挖区候选：SBI 买不到，但 AI 给出买入/观察/持有信号。"""
+    if sbi_tradable or signal_order is None:
+        return False
+    return signal_order <= 2  # 强烈买入 / 观察仓 / 钝感持有
 
 
 def _passes_first_funnel(q: QuickScreen) -> bool:

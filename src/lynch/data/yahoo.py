@@ -12,6 +12,7 @@ import pandas as pd
 import yfinance as yf
 
 from ..config import correct_ticker
+from ..metrics import check_sbi_tradable
 from .base import BaseDataProvider, Fundamentals, FundamentalsError, QuickScreen
 
 _UA = (
@@ -110,6 +111,7 @@ class YahooFinanceProvider(BaseDataProvider):
             currency=info.get("currency"),
             price=info.get("currentPrice") or info.get("regularMarketPrice"),
             market_cap=info.get("marketCap"),
+            exchange=info.get("exchange"),
             trailing_pe=info.get("trailingPE"),
             forward_pe=info.get("forwardPE"),
             earnings_growth_yoy=info.get("earningsGrowth"),
@@ -145,6 +147,8 @@ class YahooFinanceProvider(BaseDataProvider):
         price = info.get("currentPrice") or info.get("regularMarketPrice")
         pe = info.get("trailingPE")
         growth = info.get("earningsGrowth")
+        mcap = info.get("marketCap")
+        exchange = info.get("exchange")
         cash = info.get("totalCash")
         debt = info.get("totalDebt")
         shares = info.get("sharesOutstanding")
@@ -165,6 +169,9 @@ class YahooFinanceProvider(BaseDataProvider):
             ticker=ticker.upper(),
             name=info.get("shortName") or info.get("longName"),
             price=price,
+            market_cap=mcap,
+            exchange=exchange,
+            sbi_tradable=check_sbi_tradable(ticker, exchange=exchange, market_cap=mcap),
             trailing_pe=pe,
             growth_yoy=growth,
             quick_peg=quick_peg,

@@ -140,34 +140,9 @@ def extract_signal(narrative: str | None) -> tuple[int, str, str, str] | None:
     return (matched[0], matched[1], matched[2], reason)
 
 
-def _verdict_dashboard(verdicts: list[tuple[int, str, str, str, str, str]]) -> str:
-    """「🧠 智能体最终裁决看板（结论先行）」——按 买入→观察→持有→卖出→待定 分组置顶。
-
-    verdicts 每项：(优先级, ticker, name, 标签, 配色, 理由)。
-    """
-    if not verdicts:
-        return ""
-    groups: dict[int, list[tuple[str, str, str, str, str]]] = {}
-    for order, ticker, name, label, color, reason in verdicts:
-        groups.setdefault(order, []).append((ticker, name, label, color, reason))
-
-    lines = [f"> ## 🧠 智能体最终裁决看板（结论先行 · {len(verdicts)}只 AI 深度分析）", ">"]
-    ordered_groups = [(o, lab, col) for o, lab, col, _ in _SIGNAL_SPECS]
-    ordered_groups.append((_SIGNAL_UNKNOWN_ORDER, _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR))
-    for order, label, color in ordered_groups:
-        members = groups.get(order)
-        if not members:
-            continue
-        lines.append(f'> **<span style="color:{color}">{label} · {len(members)}只</span>**')
-        for ticker, name, _label, _color, reason in members:
-            tail = f"：{reason}" if reason else ""
-            lines.append(f'> - <b style="color:{color}">{ticker}｜{name}</b>{tail}')
-        lines.append(">")
-    lines.append("> *结论先行：先扫这里决定「该关注谁」，再往下翻对应公司的大白话详解。*")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    return "\n".join(lines)
+def _verdict_dashboard(verdicts: list[tuple[int, str, str, str, str, str, bool]]) -> str:
+    """双轨 AI 裁决看板（委托 notify 模块渲染）。"""
+    return notify.render_dual_track_verdict_dashboard(verdicts)
 
 
 # ── 候选集构建 ─────────────────────────────────────────────────
@@ -325,7 +300,18 @@ def _cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
     return "\n".join(lines)
 
 
-def build_briefing(mode, date_str, red_block, sections, stats, counts) -> str:
+def build_briefing(
+    mode,
+    date_str,
+    red_block,
+    main_sections,
+    hardcore_sections,
+    stats,
+    counts,
+    *,
+    ai_mode: bool = False,
+    flat_sections: list[str] | None = None,
+) -> str:
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M JST")
     title = _MODE_TITLE.get(mode, "自选股监控日报")
     funnel = ""
@@ -342,7 +328,10 @@ def build_briefing(mode, date_str, red_block, sections, stats, counts) -> str:
         "---",
         "",
     ]
-    return "\n".join(header) + red_block + "\n".join(sections)
+    detail = notify.render_dual_track_detail_sections(
+        main_sections, hardcore_sections, ai_mode=ai_mode, flat_sections=flat_sections,
+    )
+    return "\n".join(header) + red_block + detail
 
 
 def main() -> int:
@@ -378,9 +367,9 @@ def main() -> int:
         ai_tickers = set()
 
     counts = {"analyzed": 0, "ai": 0, "data_only": 0}
-    # entries: (排序键组, 生成序号, 详情文本)；排序键组决定详情区块的重排序。
-    entries: list[tuple[int, int, str]] = []
-    verdicts: list[tuple[int, str, str, str, str, str]] = []  # (优先级,ticker,name,标签,配色,理由)
+    # entries: (排序键, 序号, 详情文本, sbi_tradable)
+    entries: list[tuple[int, int, str, bool]] = []
+    verdicts: list[tuple[int, str, str, str, str, str, bool]] = []
     reds: list[tuple[str, str, list[str]]] = []
     recs: list[tuple[str, str, float | None, str]] = []
     cycs: list[tuple[str, str, str]] = []
@@ -397,6 +386,7 @@ def main() -> int:
             counts["analyzed"] += 1
             counts["ai" if use_ai else "data_only"] += 1
             display_name = a.fundamentals.name or name
+            sbi_ok = a.metrics.sbi_tradable
 
             fw = fatal_warnings(a.fundamentals, a.metrics)
             if fw:
@@ -404,7 +394,6 @@ def main() -> int:
             ok, reason = is_quality_pick(a.fundamentals, a.metrics, fw)
             if ok:
                 recs.append((q.ticker, display_name, a.metrics.peg, reason))
-            # 周期股（豁免常规排雷）单列到「行业低谷观察期」，避免凭空消失
             if not fw:
                 cyc = cyclical_watch(a.fundamentals, a.metrics)
                 if cyc:
@@ -414,36 +403,35 @@ def main() -> int:
                 sig = extract_signal(a.narrative)
                 if sig:
                     order, label, color, sig_reason = sig
-                    verdicts.append((order, q.ticker, display_name, label, color, sig_reason))
-                    entries.append((order, seq, _render_weekly(a, q.is_priority, label)))
+                    verdicts.append((order, q.ticker, display_name, label, color, sig_reason, sbi_ok))
+                    entries.append((order, seq, _render_weekly(a, q.is_priority, label), sbi_ok))
                 elif a.narrative:
-                    # AI 有输出但没给出可识别指令 → 待定组
-                    verdicts.append((_SIGNAL_UNKNOWN_ORDER, q.ticker, display_name,
-                                     _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, ""))
-                    entries.append((_SIGNAL_UNKNOWN_ORDER, seq, _render_weekly(a, q.is_priority)))
+                    verdicts.append((
+                        _SIGNAL_UNKNOWN_ORDER, q.ticker, display_name,
+                        _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, "", sbi_ok,
+                    ))
+                    entries.append((_SIGNAL_UNKNOWN_ORDER, seq, _render_weekly(a, q.is_priority), sbi_ok))
                 else:
-                    # 降级为仅硬指标（无 key / 超 AI 上限）→ 排在最后
-                    entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, _render_weekly(a, q.is_priority)))
+                    entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, _render_weekly(a, q.is_priority), sbi_ok))
             else:
                 change = None
                 try:
                     change = provider.get_stock_price_change(q.ticker, "5d")
                 except Exception:  # noqa: BLE001
                     pass
-                entries.append((seq, seq, _render_daily(a, change, q.is_priority)))
+                entries.append((seq, seq, _render_daily(a, change, q.is_priority), sbi_ok))
         except (FundamentalsError, LLMError) as exc:
             print(f"  ❌ {q.ticker}: {exc}")
-            entries.append((99, seq, _render_error(q.ticker, name, str(exc))))
+            entries.append((99, seq, _render_error(q.ticker, name, str(exc)), True))
         except Exception as exc:  # noqa: BLE001
-            # 铁律：单只股票的任何意外错误都不得拖垮整条流水线。
             print(f"  ❌ {q.ticker} 意外错误：{exc}\n{traceback.format_exc()}")
-            entries.append((99, seq, _render_error(q.ticker, name, f"意外错误: {exc}")))
+            entries.append((99, seq, _render_error(q.ticker, name, f"意外错误: {exc}"), True))
 
-    # 详情区块同频重排序：AI 模式按 买入→观察→持有→卖出→待定→错误；日报保持原序。
     entries.sort(key=lambda e: (e[0], e[1]))
-    sections = [e[2] for e in entries]
+    main_sections = [e[2] for e in entries if e[3]]
+    hardcore_sections = [e[2] for e in entries if not e[3]]
+    flat_sections = [e[2] for e in entries]
 
-    # AI 裁决看板按优先级排序
     verdicts.sort(key=lambda v: v[0])
 
     # 优质股按 PEG 从低到高排序，最多展示 20 只
@@ -454,9 +442,14 @@ def main() -> int:
     subject = f"{_SUBJECT_PREFIX.get(args.mode, _SUBJECT_PREFIX['daily'])} - {date_str}"
     # 主题带上优质股/红灯数量，手机推送一眼可见
     tags = []
-    buy_count = sum(1 for v in verdicts if v[0] == 0)
+    buy_count = sum(1 for v in verdicts if v[0] == 0 and v[6])
     if buy_count:
-        tags.append(f"🧠{buy_count}只强买")
+        tags.append(f"🏦{buy_count}只SBI强买")
+    sbi_buy = buy_count
+    if sbi_buy == 0:
+        buy_count_all = sum(1 for v in verdicts if v[0] == 0)
+        if buy_count_all:
+            tags.append(f"🧠{buy_count_all}只强买")
     if recs:
         tags.append(f"🟢{len(recs)}只优质")
     if reds:
@@ -473,7 +466,10 @@ def main() -> int:
         + _verdict_dashboard(verdicts)
         + _cyclical_block(cycs)
     )
-    briefing = build_briefing(args.mode, date_str, top_block, sections, stats, counts)
+    briefing = build_briefing(
+        args.mode, date_str, top_block, main_sections, hardcore_sections, stats, counts,
+        ai_mode=ai_mode, flat_sections=flat_sections,
+    )
 
     print("\n" + "=" * 60)
     print(f"主题：{subject}")
