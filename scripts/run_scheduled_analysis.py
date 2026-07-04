@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -92,6 +93,81 @@ _SUBJECT_PREFIX = {
     "quarterly": "【彼得林奇财报季会诊】季报",
     "annual": "【彼得林奇年终审视】年报",
 }
+
+# AI 行动指令：(优先级, 展示标签, 配色, 关键词) —— 强制排序 买入→观察→持有→卖出。
+# 关键词按英文标签优先匹配（无歧义），再退回中文。
+_SIGNAL_SPECS = [
+    (0, "🟢 强烈买入 (BUY NOW)", "#1e8449", ("BUY NOW", "BUYNOW", "强烈买入")),
+    (1, "🟡 放入观察仓 (WATCHLIST)", "#b9770e", ("WATCHLIST", "观察仓", "观察")),
+    (2, "⚪ 钝感持有 (HOLD)", "#566573", ("HOLD", "钝感持有", "持有")),
+    (3, "🔴 坚决卖出/避开 (SELL/AVOID)", "#c0392b", ("SELL", "AVOID", "卖出", "避开")),
+]
+_SIGNAL_UNKNOWN_ORDER = 8
+_SIGNAL_UNKNOWN_LABEL = "⚪ 待定（AI 未给出明确指令）"
+_SIGNAL_UNKNOWN_COLOR = "#566573"
+
+
+def extract_signal(narrative: str | None) -> tuple[int, str, str, str] | None:
+    """从 Gemini 叙述末尾提取【行动指令】。返回 (优先级, 展示标签, 配色, 核心理由)。
+
+    优先定位含「行动指令」的那一行；找不到则全文兜底扫描四类标签。无法识别返回 None。
+    """
+    if not narrative:
+        return None
+    signal_line = None
+    for ln in narrative.splitlines():
+        if "行动指令" in ln:
+            signal_line = ln
+            break
+    scan = signal_line or narrative
+    scan_up = scan.upper()
+
+    matched = None
+    for order, label, color, kws in _SIGNAL_SPECS:
+        if any(kw.upper() in scan_up for kw in kws):
+            matched = (order, label, color)
+            break
+    if matched is None:
+        return None
+
+    reason = ""
+    if signal_line:
+        cleaned = signal_line.strip().lstrip(">#*-• ").strip()
+        cleaned = re.sub(r"^\*{0,2}【行动指令】\*{0,2}\s*", "", cleaned)
+        parts = re.split(r"[：:]", cleaned, maxsplit=1)
+        if len(parts) > 1:
+            reason = parts[1].strip().strip("*` ")
+    return (matched[0], matched[1], matched[2], reason)
+
+
+def _verdict_dashboard(verdicts: list[tuple[int, str, str, str, str, str]]) -> str:
+    """「🧠 智能体最终裁决看板（结论先行）」——按 买入→观察→持有→卖出→待定 分组置顶。
+
+    verdicts 每项：(优先级, ticker, name, 标签, 配色, 理由)。
+    """
+    if not verdicts:
+        return ""
+    groups: dict[int, list[tuple[str, str, str, str, str]]] = {}
+    for order, ticker, name, label, color, reason in verdicts:
+        groups.setdefault(order, []).append((ticker, name, label, color, reason))
+
+    lines = [f"> ## 🧠 智能体最终裁决看板（结论先行 · {len(verdicts)}只 AI 深度分析）", ">"]
+    ordered_groups = [(o, lab, col) for o, lab, col, _ in _SIGNAL_SPECS]
+    ordered_groups.append((_SIGNAL_UNKNOWN_ORDER, _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR))
+    for order, label, color in ordered_groups:
+        members = groups.get(order)
+        if not members:
+            continue
+        lines.append(f'> **<span style="color:{color}">{label} · {len(members)}只</span>**')
+        for ticker, name, _label, _color, reason in members:
+            tail = f"：{reason}" if reason else ""
+            lines.append(f'> - <b style="color:{color}">{ticker}｜{name}</b>{tail}')
+        lines.append(">")
+    lines.append("> *结论先行：先扫这里决定「该关注谁」，再往下翻对应公司的大白话详解。*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ── 候选集构建 ─────────────────────────────────────────────────
@@ -178,9 +254,10 @@ def _render_daily(a: LynchAnalysis, change_5d: float | None, priority: bool) -> 
     )
 
 
-def _render_weekly(a: LynchAnalysis, priority: bool) -> str:
+def _render_weekly(a: LynchAnalysis, priority: bool, signal_label: str = "") -> str:
     star = "⭐ " if priority else ""
-    lines = [f"## {star}{a.ticker} — {a.fundamentals.name or a.ticker}", "", f"`{_flag_line(a)}`", ""]
+    tag = f"　｜　{signal_label}" if signal_label else ""
+    lines = [f"## {star}{a.ticker} — {a.fundamentals.name or a.ticker}{tag}", "", f"`{_flag_line(a)}`", ""]
     if a.narrative:
         lines.append(a.narrative)
     else:
@@ -301,12 +378,14 @@ def main() -> int:
         ai_tickers = set()
 
     counts = {"analyzed": 0, "ai": 0, "data_only": 0}
-    sections: list[str] = []
+    # entries: (排序键组, 生成序号, 详情文本)；排序键组决定详情区块的重排序。
+    entries: list[tuple[int, int, str]] = []
+    verdicts: list[tuple[int, str, str, str, str, str]] = []  # (优先级,ticker,name,标签,配色,理由)
     reds: list[tuple[str, str, list[str]]] = []
     recs: list[tuple[str, str, float | None, str]] = []
     cycs: list[tuple[str, str, str]] = []
 
-    for q in working:
+    for seq, q in enumerate(working):
         name = watch.get(q.ticker, (q.name or q.ticker, ""))[0]
         note = watch.get(q.ticker, ("", ""))[1]
         use_ai = q.ticker in ai_tickers
@@ -332,21 +411,40 @@ def main() -> int:
                     cycs.append((q.ticker, display_name, cyc))
 
             if ai_mode:
-                sections.append(_render_weekly(a, q.is_priority))
+                sig = extract_signal(a.narrative)
+                if sig:
+                    order, label, color, sig_reason = sig
+                    verdicts.append((order, q.ticker, display_name, label, color, sig_reason))
+                    entries.append((order, seq, _render_weekly(a, q.is_priority, label)))
+                elif a.narrative:
+                    # AI 有输出但没给出可识别指令 → 待定组
+                    verdicts.append((_SIGNAL_UNKNOWN_ORDER, q.ticker, display_name,
+                                     _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, ""))
+                    entries.append((_SIGNAL_UNKNOWN_ORDER, seq, _render_weekly(a, q.is_priority)))
+                else:
+                    # 降级为仅硬指标（无 key / 超 AI 上限）→ 排在最后
+                    entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, _render_weekly(a, q.is_priority)))
             else:
                 change = None
                 try:
                     change = provider.get_stock_price_change(q.ticker, "5d")
                 except Exception:  # noqa: BLE001
                     pass
-                sections.append(_render_daily(a, change, q.is_priority))
+                entries.append((seq, seq, _render_daily(a, change, q.is_priority)))
         except (FundamentalsError, LLMError) as exc:
             print(f"  ❌ {q.ticker}: {exc}")
-            sections.append(_render_error(q.ticker, name, str(exc)))
+            entries.append((99, seq, _render_error(q.ticker, name, str(exc))))
         except Exception as exc:  # noqa: BLE001
             # 铁律：单只股票的任何意外错误都不得拖垮整条流水线。
             print(f"  ❌ {q.ticker} 意外错误：{exc}\n{traceback.format_exc()}")
-            sections.append(_render_error(q.ticker, name, f"意外错误: {exc}"))
+            entries.append((99, seq, _render_error(q.ticker, name, f"意外错误: {exc}")))
+
+    # 详情区块同频重排序：AI 模式按 买入→观察→持有→卖出→待定→错误；日报保持原序。
+    entries.sort(key=lambda e: (e[0], e[1]))
+    sections = [e[2] for e in entries]
+
+    # AI 裁决看板按优先级排序
+    verdicts.sort(key=lambda v: v[0])
 
     # 优质股按 PEG 从低到高排序，最多展示 20 只
     recs.sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
@@ -356,6 +454,9 @@ def main() -> int:
     subject = f"{_SUBJECT_PREFIX.get(args.mode, _SUBJECT_PREFIX['daily'])} - {date_str}"
     # 主题带上优质股/红灯数量，手机推送一眼可见
     tags = []
+    buy_count = sum(1 for v in verdicts if v[0] == 0)
+    if buy_count:
+        tags.append(f"🧠{buy_count}只强买")
     if recs:
         tags.append(f"🟢{len(recs)}只优质")
     if reds:
@@ -365,7 +466,13 @@ def main() -> int:
     if tags:
         subject += "（" + "·".join(tags) + "）"
 
-    top_block = _recommend_block(recs) + _red_flag_block(reds) + _cyclical_block(cycs)
+    # 顶部顺序：优质股 → 致命红灯 → 🧠AI裁决看板（结论先行）→ 周期观察
+    top_block = (
+        _recommend_block(recs)
+        + _red_flag_block(reds)
+        + _verdict_dashboard(verdicts)
+        + _cyclical_block(cycs)
+    )
     briefing = build_briefing(args.mode, date_str, top_block, sections, stats, counts)
 
     print("\n" + "=" * 60)

@@ -30,6 +30,24 @@ def _missing() -> list[str]:
     return [k for k in _REQUIRED if not os.environ.get(k)]
 
 
+# 让「结论先行」的置顶摘要板块（优质股/排雷/🧠AI裁决看板/周期）以醒目卡片呈现。
+_EMAIL_STYLE = (
+    "<style>"
+    "body{font-family:-apple-system,Segoe UI,Helvetica,Arial,"
+    "'PingFang SC','Microsoft YaHei',sans-serif;line-height:1.6;color:#222;"
+    "max-width:760px;margin:0 auto;padding:12px}"
+    "h1{font-size:22px}h2{font-size:18px;margin:14px 0 6px}"
+    "blockquote{margin:12px 0;padding:10px 14px;background:#f6f8fa;"
+    "border-left:5px solid #4a90d9;border-radius:6px}"
+    "blockquote h2{margin-top:2px}"
+    "blockquote ul{margin:6px 0;padding-left:20px}"
+    "hr{border:none;border-top:1px solid #e1e4e8;margin:16px 0}"
+    "code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:90%}"
+    "pre{background:#f6f8fa;padding:10px;border-radius:6px;overflow:auto}"
+    "</style>"
+)
+
+
 def _markdown_to_html(md: str) -> str:
     """把 Markdown 转成 HTML；无 markdown 库时退回 <pre> 包裹（保证可读）。"""
     try:
@@ -40,12 +58,7 @@ def _markdown_to_html(md: str) -> str:
         import html
 
         body = f"<pre style='white-space:pre-wrap'>{html.escape(md)}</pre>"
-    return (
-        "<html><body style=\"font-family:-apple-system,Segoe UI,Helvetica,Arial,"
-        "'PingFang SC','Microsoft YaHei',sans-serif;line-height:1.6;color:#222;"
-        'max-width:760px;margin:0 auto;padding:12px">'
-        f"{body}</body></html>"
-    )
+    return f"<html><head>{_EMAIL_STYLE}</head><body>{body}</body></html>"
 
 
 def send_email(subject: str, markdown_body: str) -> bool:
