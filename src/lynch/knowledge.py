@@ -16,7 +16,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent.parent
 PLAYBOOK_PATH = _ROOT / "knowledge" / "lynch_playbook.md"
 INDEX_PATH = _ROOT / "books" / "lynch_book.rag.json"
-EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "text-embedding-004")
+EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
 
 
 @lru_cache(maxsize=1)
@@ -69,12 +69,17 @@ def retrieve(query: str, k: int = 3) -> list[str]:
     try:
         import numpy as np
 
-        q_vec = np.array(embed_texts([query], task_type="RETRIEVAL_QUERY")[0], dtype="float32")
-        mat = np.array(embeddings, dtype="float32")
-        # 余弦相似度
-        q_norm = q_vec / (np.linalg.norm(q_vec) + 1e-9)
-        m_norm = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9)
-        scores = m_norm @ q_norm
+        # 用 float64 计算，并先清洗掉可能的 NaN/inf，避免高维向量溢出影响排序
+        q_vec = np.nan_to_num(
+            np.asarray(embed_texts([query], task_type="RETRIEVAL_QUERY")[0], dtype="float64")
+        )
+        mat = np.nan_to_num(np.asarray(embeddings, dtype="float64"))
+        q_norm = q_vec / (np.linalg.norm(q_vec) + 1e-12)
+        m_norm = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12)
+        # 数据已确认有限；抑制 BLAS matmul 内核在大矩阵上偶发的无害 FP 标志告警
+        with np.errstate(all="ignore"):
+            scores = m_norm @ q_norm
+        scores = np.nan_to_num(scores, nan=-1.0, posinf=-1.0, neginf=-1.0)
         top = np.argsort(-scores)[:k]
         return [chunks[i] for i in top]
     except Exception:  # noqa: BLE001
