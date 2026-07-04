@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import re
 import sys
 import traceback
 from datetime import datetime
@@ -52,6 +51,12 @@ from src.lynch.funnel import (  # noqa: E402
     first_funnel,
     is_quality_pick,
     rank_and_cap,
+)
+from src.lynch.signals import (  # noqa: E402
+    SIGNAL_UNKNOWN_COLOR,
+    SIGNAL_UNKNOWN_LABEL,
+    SIGNAL_UNKNOWN,
+    resolve_action_signal,
 )
 from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.universe import get_universe  # noqa: E402
@@ -94,50 +99,8 @@ _SUBJECT_PREFIX = {
     "annual": "【彼得林奇年终审视】年报",
 }
 
-# AI 行动指令：(优先级, 展示标签, 配色, 关键词) —— 强制排序 买入→观察→持有→卖出。
-# 关键词按英文标签优先匹配（无歧义），再退回中文。
-_SIGNAL_SPECS = [
-    (0, "🟢 强烈买入 (BUY NOW)", "#1e8449", ("BUY NOW", "BUYNOW", "强烈买入")),
-    (1, "🟡 放入观察仓 (WATCHLIST)", "#b9770e", ("WATCHLIST", "观察仓", "观察")),
-    (2, "⚪ 钝感持有 (HOLD)", "#566573", ("HOLD", "钝感持有", "持有")),
-    (3, "🔴 坚决卖出/避开 (SELL/AVOID)", "#c0392b", ("SELL", "AVOID", "卖出", "避开")),
-]
-_SIGNAL_UNKNOWN_ORDER = 8
-_SIGNAL_UNKNOWN_LABEL = "⚪ 待定（AI 未给出明确指令）"
-_SIGNAL_UNKNOWN_COLOR = "#566573"
-
-
-def extract_signal(narrative: str | None) -> tuple[int, str, str, str] | None:
-    """从 Gemini 叙述末尾提取【行动指令】。返回 (优先级, 展示标签, 配色, 核心理由)。
-
-    优先定位含「行动指令」的那一行；找不到则全文兜底扫描四类标签。无法识别返回 None。
-    """
-    if not narrative:
-        return None
-    signal_line = None
-    for ln in narrative.splitlines():
-        if "行动指令" in ln:
-            signal_line = ln
-            break
-    scan = signal_line or narrative
-    scan_up = scan.upper()
-
-    matched = None
-    for order, label, color, kws in _SIGNAL_SPECS:
-        if any(kw.upper() in scan_up for kw in kws):
-            matched = (order, label, color)
-            break
-    if matched is None:
-        return None
-
-    reason = ""
-    if signal_line:
-        cleaned = signal_line.strip().lstrip(">#*-• ").strip()
-        cleaned = re.sub(r"^\*{0,2}【行动指令】\*{0,2}\s*", "", cleaned)
-        parts = re.split(r"[：:]", cleaned, maxsplit=1)
-        if len(parts) > 1:
-            reason = parts[1].strip().strip("*` ")
-    return (matched[0], matched[1], matched[2], reason)
+# AI 行动指令常量（与 src/lynch/signals.py 同步，供本脚本渲染兜底）
+_SIGNAL_UNKNOWN_ORDER = SIGNAL_UNKNOWN
 
 
 def _verdict_dashboard(verdicts: list[tuple[int, str, str, str, str, str, bool]]) -> str:
@@ -400,7 +363,7 @@ def main() -> int:
                     cycs.append((q.ticker, display_name, cyc))
 
             if ai_mode:
-                sig = extract_signal(a.narrative)
+                sig = resolve_action_signal(a.narrative, a.metrics)
                 if sig:
                     order, label, color, sig_reason = sig
                     verdicts.append((order, q.ticker, display_name, label, color, sig_reason, sbi_ok))
