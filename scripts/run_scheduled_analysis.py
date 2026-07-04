@@ -42,7 +42,13 @@ from src.lynch.agent import LynchAnalysis  # noqa: E402
 from src.lynch.config import correct_ticker  # noqa: E402
 from src.lynch.data.base import QuickScreen  # noqa: E402
 from src.lynch.fundamentals import FundamentalsError  # noqa: E402
-from src.lynch.funnel import fatal_warnings, first_funnel, is_quality_pick, rank_and_cap  # noqa: E402
+from src.lynch.funnel import (  # noqa: E402
+    cyclical_watch,
+    fatal_warnings,
+    first_funnel,
+    is_quality_pick,
+    rank_and_cap,
+)
 from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.universe import get_universe  # noqa: E402
 
@@ -188,6 +194,21 @@ def _recommend_block(recs: list[tuple[str, str, float | None, str]]) -> str:
     return "\n".join(lines)
 
 
+def _cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
+    """「🌀 周期型公司 - 行业低谷观察期」板块。豁免常规排雷的周期股单列于此。"""
+    if not cycs:
+        return ""
+    lines = [f"> ## 🌀 周期型公司 · 行业低谷观察期（{len(cycs)}只）", ">"]
+    for ticker, name, reason in cycs:
+        lines.append(f"> - <b style=\"color:#b9770e\">🌀 {ticker}｜{name}</b>：{reason}")
+    lines.append(">")
+    lines.append("> *周期股反向操作：利润最差、P/E最高时往往是底部；别在利润最漂亮时追。*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def build_briefing(mode, date_str, red_block, sections, stats, counts) -> str:
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M JST")
     title = "深度分析周报" if mode == "weekly" else "自选股监控日报"
@@ -242,6 +263,7 @@ def main() -> int:
     sections: list[str] = []
     reds: list[tuple[str, str, list[str]]] = []
     recs: list[tuple[str, str, float | None, str]] = []
+    cycs: list[tuple[str, str, str]] = []
 
     for q in working:
         name = watch.get(q.ticker, (q.name or q.ticker, ""))[0]
@@ -259,6 +281,11 @@ def main() -> int:
             ok, reason = is_quality_pick(a.fundamentals, a.metrics, fw)
             if ok:
                 recs.append((q.ticker, display_name, a.metrics.peg, reason))
+            # 周期股（豁免常规排雷）单列到「行业低谷观察期」，避免凭空消失
+            if not fw:
+                cyc = cyclical_watch(a.fundamentals, a.metrics)
+                if cyc:
+                    cycs.append((q.ticker, display_name, cyc))
 
             if weekly:
                 sections.append(_render_weekly(a, q.is_priority))
@@ -293,10 +320,12 @@ def main() -> int:
         tags.append(f"🟢{len(recs)}只优质")
     if reds:
         tags.append(f"🔴{len(reds)}只排雷")
+    if cycs:
+        tags.append(f"🌀{len(cycs)}只周期")
     if tags:
         subject += "（" + "·".join(tags) + "）"
 
-    top_block = _recommend_block(recs) + _red_flag_block(reds)
+    top_block = _recommend_block(recs) + _red_flag_block(reds) + _cyclical_block(cycs)
     briefing = build_briefing(args.mode, date_str, top_block, sections, stats, counts)
 
     print("\n" + "=" * 60)

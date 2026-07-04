@@ -40,6 +40,7 @@ class Fundamentals:
     long_term_debt: float | None = None
     total_debt: float | None = None
     stockholders_equity: float | None = None
+    total_assets: float | None = None
     total_cash: float | None = None
     cash_per_share: float | None = None
 

@@ -104,6 +104,28 @@ def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple
     return False, ""
 
 
+def cyclical_watch(f: Fundamentals, m: LynchMetrics) -> str | None:
+    """判定周期股是否处于「行业低谷观察期」。返回一句观察理由，否则 None。
+
+    对周期股而言，亏损/高 P/E/长期利润下滑/短期利润暴跌都被豁免了常规排雷，
+    但它们不该凭空消失——反而正是需要盯着行业库存拐点的潜在底部买点，单列展示。
+    """
+    if not m.is_cyclical:
+        return None
+    signals: list[str] = []
+    if f.trailing_pe is None:
+        signals.append("当前亏损/无有效P/E")
+    elif f.trailing_pe > 30:
+        signals.append(f"P/E高达{f.trailing_pe:.0f}")
+    if m.growth_rate is not None and m.growth_rate < 0:
+        signals.append("长期利润下滑")
+    if f.earnings_growth_yoy is not None and f.earnings_growth_yoy <= -0.30:
+        signals.append(f"短期利润暴跌{f.earnings_growth_yoy:.0%}")
+    if not signals:
+        return None
+    return "；".join(signals) + " → 疑似周期底部，盯行业渠道/库存拐点，勿当红灯"
+
+
 def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
     """提取"故事变坏"的致命量化红灯。空列表表示暂无硬伤。
 
@@ -114,12 +136,25 @@ def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
     """
     reasons: list[str] = []
 
-    # 1) 存货增速 > 销售增速的 2 倍（周期股同样适用——存货堆积=见顶卖点）
+    # 1) 存货增速 > 销售增速的 2 倍（增加轻资产与科技/通信股豁免）
     inv_yoy = _yoy(f.inventory_series)
     sales_yoy = _yoy(f.revenue_series)
     if inv_yoy is not None and sales_yoy is not None and inv_yoy > 0:
-        if inv_yoy > max(sales_yoy, 0) * 2 and inv_yoy - sales_yoy > 0.05:
-            reasons.append(f"存货暴增(存货+{inv_yoy:.0%} vs 销售+{sales_yoy:.0%})")
+        # 科技/通信属于轻资产行业（否则谷歌等会被存货规则错杀）
+        is_tech = f.sector in ("Technology", "Communication Services")
+
+        # 最新一期存货占总资产比例
+        latest_inv = 0.0
+        if f.inventory_series:
+            latest_inv = f.inventory_series[max(f.inventory_series)]
+        inv_ratio = (latest_inv / f.total_assets) if (latest_inv and f.total_assets) else 0.0
+
+        # 科技股 或 存货占总资产极低(<5%) → 强制豁免存货暴增红灯
+        is_light_asset_safe = is_tech or (0 < inv_ratio < 0.05)
+
+        if not is_light_asset_safe:
+            if inv_yoy > max(sales_yoy, 0) * 2 and inv_yoy - sales_yoy > 0.05:
+                reasons.append(f"存货暴增(存货+{inv_yoy:.0%} vs 销售+{sales_yoy:.0%})")
 
     # 2) 长期负债 / 股东权益 > 1/3（金融股豁免）
     if not m.is_financial and f.long_term_debt is not None and f.stockholders_equity and f.stockholders_equity > 0:

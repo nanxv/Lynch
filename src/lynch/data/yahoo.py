@@ -121,6 +121,7 @@ class YahooFinanceProvider(BaseDataProvider):
             long_term_debt=_latest(balance, "Long Term Debt") or info.get("longTermDebt"),
             total_debt=info.get("totalDebt") or _latest(balance, "Total Debt"),
             stockholders_equity=_latest(balance, "Stockholders Equity", "Common Stock Equity"),
+            total_assets=_latest(balance, "Total Assets") or info.get("totalAssets"),
             total_cash=info.get("totalCash") or _latest(balance, "Cash And Cash Equivalents"),
             cash_per_share=info.get("totalCashPerShare"),
             free_cashflow=info.get("freeCashflow") or _latest(cash, "Free Cash Flow"),
