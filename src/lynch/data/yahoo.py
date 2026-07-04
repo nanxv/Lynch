@@ -396,12 +396,11 @@ def _finalize_with_temporal(
     from ..metrics import compute_metrics, _pick_growth
 
     anchor = build_temporal_anchor(tk, f, mode=mode)
-    f = dataclasses.replace(
-        f,
-        spot_price=f.price,
-        spot_pe=f.trailing_pe,
-        **{k: v for k, v in anchor.items() if k in Fundamentals.__dataclass_fields__},
-    )
+    temporal = {
+        k: v for k, v in anchor.items()
+        if k in Fundamentals.__dataclass_fields__
+    }
+    f = dataclasses.replace(f, **temporal)
 
     blocks: list[str] = []
     growth, _ = _pick_growth(f)
