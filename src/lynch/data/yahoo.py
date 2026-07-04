@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import random
 import time
 from typing import Any
@@ -12,9 +13,15 @@ import yfinance as yf
 from ..config import correct_ticker
 from ..metrics import check_sbi_tradable
 from ..report_modes import normalize_mode
+from ..temporal import (
+    build_temporal_anchor,
+    dividend_adjusted_peg,
+    format_temporal_block,
+    implied_eps_ttm,
+    pe_range_5y,
+)
 from .base import BaseDataProvider, Fundamentals, FundamentalsError, QuickScreen
 from .granularity import (
-    empty_granularity,
     format_annual_block,
     format_monthly_block,
     format_quarterly_block,
@@ -253,6 +260,10 @@ def _build_annual_granularity(
     balance: pd.DataFrame | None,
     cash: pd.DataFrame | None,
     currency: str | None,
+    *,
+    pe_5y_min: float | None = None,
+    pe_5y_avg: float | None = None,
+    spot_pe: float | None = None,
 ) -> tuple[str, dict[str, Any]]:
     revenue_series = _row_series_annual(income, "Total Revenue", "Operating Revenue")
     net_income_series = _row_series_annual(
@@ -285,28 +296,150 @@ def _build_annual_granularity(
         roic_proxy_series=roic_proxy,
         currency=currency,
         span_years=span,
+        pe_5y_min=pe_5y_min,
+        pe_5y_avg=pe_5y_avg,
+        spot_pe=spot_pe,
     )
     return block, raw
 
 
 def _build_monthly_granularity(
     tk: yf.Ticker,
+    f: Fundamentals,
     peg_now: float | None,
     peg_prior: float | None,
     currency: str | None,
 ) -> tuple[str, dict[str, Any]]:
     change_20d, rsi = _price_momentum(tk)
-    peg_delta = None
-    if peg_now is not None and peg_prior is not None:
-        peg_delta = _pct_change(peg_now, peg_prior)
+    peg_delta = _pct_change(peg_now, peg_prior) if peg_prior else None
+    if f.peg_1mo_ago is not None and peg_now is not None:
+        peg_delta = _pct_change(peg_now, f.peg_1mo_ago)
     return format_monthly_block(
         change_20d=change_20d,
         rsi_14=rsi,
         peg_now=peg_now,
         peg_prior=peg_prior,
         peg_delta=peg_delta,
+        price_now=f.spot_price or f.price,
+        price_1mo_ago=f.price_1mo_ago,
+        pe_now=f.spot_pe or f.trailing_pe,
+        pe_1mo_ago=f.pe_1mo_ago,
+        peg_1mo_ago=f.peg_1mo_ago,
         currency=currency,
     )
+
+
+def _base_fundamentals_from_info(
+    ticker: str,
+    info: dict,
+    income: pd.DataFrame | None,
+    balance: pd.DataFrame | None,
+    cash: pd.DataFrame | None,
+    *,
+    mode: str,
+    source: str,
+) -> Fundamentals:
+    spot = info.get("regularMarketPrice") or info.get("currentPrice")
+    return Fundamentals(
+        ticker=ticker.upper(),
+        name=info.get("longName") or info.get("shortName"),
+        sector=info.get("sector"),
+        industry=info.get("industry"),
+        currency=info.get("currency"),
+        price=spot,
+        spot_price=spot,
+        spot_pe=info.get("trailingPE"),
+        market_cap=info.get("marketCap"),
+        exchange=info.get("exchange"),
+        trailing_pe=info.get("trailingPE"),
+        forward_pe=info.get("forwardPE"),
+        earnings_growth_yoy=info.get("earningsGrowth"),
+        revenue_growth_yoy=info.get("revenueGrowth"),
+        eps_series=_row_series_annual(income, "Diluted EPS", "Basic EPS"),
+        net_income_series=_row_series_annual(
+            income, "Net Income", "Net Income Common Stockholders",
+        ),
+        revenue_series=_row_series_annual(income, "Total Revenue", "Operating Revenue"),
+        inventory_series=_row_series_annual(balance, "Inventory"),
+        long_term_debt=_latest_annual(balance, "Long Term Debt") or info.get("longTermDebt"),
+        total_debt=info.get("totalDebt") or _latest_annual(balance, "Total Debt"),
+        stockholders_equity=_latest_annual(
+            balance, "Stockholders Equity", "Common Stock Equity",
+        ),
+        total_assets=_latest_annual(balance, "Total Assets") or info.get("totalAssets"),
+        total_cash=info.get("totalCash") or _latest_annual(
+            balance, "Cash And Cash Equivalents",
+        ),
+        cash_per_share=info.get("totalCashPerShare"),
+        free_cashflow=info.get("freeCashflow") or _latest_annual(cash, "Free Cash Flow"),
+        operating_cashflow=info.get("operatingCashflow") or _latest_annual(
+            cash, "Operating Cash Flow",
+        ),
+        capital_expenditure=_latest_annual(cash, "Capital Expenditure"),
+        shares_outstanding=info.get("sharesOutstanding"),
+        dividend_yield=info.get("dividendYield"),
+        held_percent_institutions=info.get("heldPercentInstitutions"),
+        source=source,
+        report_mode=mode,
+    )
+
+
+def _finalize_with_temporal(
+    f: Fundamentals,
+    tk: yf.Ticker,
+    *,
+    mode: str,
+    extra_granularity: str = "",
+) -> Fundamentals:
+    """注入时间轴字段 + 拼接 granularity_block。"""
+    from ..history import load_record_near_days_ago
+    from ..metrics import compute_metrics, _pick_growth
+
+    anchor = build_temporal_anchor(tk, f, mode=mode)
+    f = dataclasses.replace(
+        f,
+        spot_price=f.price,
+        spot_pe=f.trailing_pe,
+        **{k: v for k, v in anchor.items() if k in Fundamentals.__dataclass_fields__},
+    )
+
+    blocks: list[str] = []
+    growth, _ = _pick_growth(f)
+
+    if mode == "monthly":
+        peg_now = compute_metrics(f).peg
+        prior_rec = load_record_near_days_ago(f.ticker, days=30)
+        peg_prior = prior_rec.peg if prior_rec else f.peg_1mo_ago
+        monthly_block, _ = _build_monthly_granularity(
+            tk, f, peg_now, peg_prior, f.currency,
+        )
+        blocks.append(monthly_block)
+    elif mode == "quarterly":
+        q_block, _ = _build_quarterly_granularity(tk, f.currency)
+        blocks.append(q_block)
+    elif mode == "annual":
+        try:
+            income = tk.income_stmt
+            balance = tk.balance_sheet
+            cash = tk.cashflow
+        except Exception:  # noqa: BLE001
+            income = balance = cash = None
+        a_block, _ = _build_annual_granularity(
+            tk, income, balance, cash, f.currency,
+            pe_5y_min=f.pe_5y_min,
+            pe_5y_avg=f.pe_5y_avg,
+            spot_pe=f.spot_pe,
+        )
+        blocks.append(a_block)
+
+    if mode in ("quarterly", "annual", "monthly"):
+        blocks.append(format_temporal_block(f))
+
+    if extra_granularity:
+        blocks.insert(0, extra_granularity)
+
+    gran = "\n\n".join(b for b in blocks if b)
+    return dataclasses.replace(f, granularity_block=gran)
 
 
 class YahooFinanceProvider(BaseDataProvider):
@@ -325,108 +458,52 @@ class YahooFinanceProvider(BaseDataProvider):
         except Exception:  # noqa: BLE001
             income = balance = cash = None
 
-        granularity_block = ""
-        peg_prior: float | None = None
-
-        if mode == "quarterly":
-            granularity_block, _ = _build_quarterly_granularity(tk, info.get("currency"))
-        elif mode == "annual":
-            granularity_block, _ = _build_annual_granularity(
-                tk, income, balance, cash, info.get("currency"),
-            )
-        elif mode == "monthly":
-            from ..history import load_record_near_days_ago
-            from ..metrics import compute_metrics
-
-            # 先用年度快照算当前 PEG，再对比约一月前存档
-            base_f = Fundamentals(
-                ticker=ticker.upper(),
-                name=info.get("longName") or info.get("shortName"),
-                sector=info.get("sector"),
-                industry=info.get("industry"),
-                currency=info.get("currency"),
-                price=info.get("currentPrice") or info.get("regularMarketPrice"),
-                market_cap=info.get("marketCap"),
-                trailing_pe=info.get("trailingPE"),
-                forward_pe=info.get("forwardPE"),
-                earnings_growth_yoy=info.get("earningsGrowth"),
-                revenue_growth_yoy=info.get("revenueGrowth"),
-                eps_series=_row_series_annual(income, "Diluted EPS", "Basic EPS"),
-                net_income_series=_row_series_annual(
-                    income, "Net Income", "Net Income Common Stockholders",
-                ),
-                revenue_series=_row_series_annual(income, "Total Revenue", "Operating Revenue"),
-                inventory_series=_row_series_annual(balance, "Inventory"),
-                long_term_debt=_latest_annual(balance, "Long Term Debt") or info.get("longTermDebt"),
-                total_debt=info.get("totalDebt") or _latest_annual(balance, "Total Debt"),
-                stockholders_equity=_latest_annual(
-                    balance, "Stockholders Equity", "Common Stock Equity",
-                ),
-                total_assets=_latest_annual(balance, "Total Assets") or info.get("totalAssets"),
-                total_cash=info.get("totalCash") or _latest_annual(
-                    balance, "Cash And Cash Equivalents",
-                ),
-                cash_per_share=info.get("totalCashPerShare"),
-                free_cashflow=info.get("freeCashflow") or _latest_annual(cash, "Free Cash Flow"),
-                operating_cashflow=info.get("operatingCashflow") or _latest_annual(
-                    cash, "Operating Cash Flow",
-                ),
-                capital_expenditure=_latest_annual(cash, "Capital Expenditure"),
-                shares_outstanding=info.get("sharesOutstanding"),
-                dividend_yield=info.get("dividendYield"),
-                held_percent_institutions=info.get("heldPercentInstitutions"),
-                exchange=info.get("exchange"),
-                source=self.name,
-                report_mode=mode,
-            )
-            peg_now = compute_metrics(base_f).peg
-            prior_rec = load_record_near_days_ago(ticker, days=30)
-            peg_prior = prior_rec.peg if prior_rec else None
-            granularity_block, _ = _build_monthly_granularity(
-                tk, peg_now, peg_prior, info.get("currency"),
-            )
-
-        return Fundamentals(
-            ticker=ticker.upper(),
-            name=info.get("longName") or info.get("shortName"),
-            sector=info.get("sector"),
-            industry=info.get("industry"),
-            currency=info.get("currency"),
-            price=info.get("currentPrice") or info.get("regularMarketPrice"),
-            market_cap=info.get("marketCap"),
-            exchange=info.get("exchange"),
-            trailing_pe=info.get("trailingPE"),
-            forward_pe=info.get("forwardPE"),
-            earnings_growth_yoy=info.get("earningsGrowth"),
-            revenue_growth_yoy=info.get("revenueGrowth"),
-            eps_series=_row_series_annual(income, "Diluted EPS", "Basic EPS"),
-            net_income_series=_row_series_annual(
-                income, "Net Income", "Net Income Common Stockholders",
-            ),
-            revenue_series=_row_series_annual(income, "Total Revenue", "Operating Revenue"),
-            inventory_series=_row_series_annual(balance, "Inventory"),
-            long_term_debt=_latest_annual(balance, "Long Term Debt") or info.get("longTermDebt"),
-            total_debt=info.get("totalDebt") or _latest_annual(balance, "Total Debt"),
-            stockholders_equity=_latest_annual(
-                balance, "Stockholders Equity", "Common Stock Equity",
-            ),
-            total_assets=_latest_annual(balance, "Total Assets") or info.get("totalAssets"),
-            total_cash=info.get("totalCash") or _latest_annual(
-                balance, "Cash And Cash Equivalents",
-            ),
-            cash_per_share=info.get("totalCashPerShare"),
-            free_cashflow=info.get("freeCashflow") or _latest_annual(cash, "Free Cash Flow"),
-            operating_cashflow=info.get("operatingCashflow") or _latest_annual(
-                cash, "Operating Cash Flow",
-            ),
-            capital_expenditure=_latest_annual(cash, "Capital Expenditure"),
-            shares_outstanding=info.get("sharesOutstanding"),
-            dividend_yield=info.get("dividendYield"),
-            held_percent_institutions=info.get("heldPercentInstitutions"),
-            source=self.name,
-            report_mode=mode,
-            granularity_block=granularity_block,
+        base = _base_fundamentals_from_info(
+            ticker, info, income, balance, cash, mode=mode, source=self.name,
         )
+        return _finalize_with_temporal(base, tk, mode=mode)
+
+    def get_intraday_snapshot(self, ticker: str) -> dict[str, Any]:
+        """盘中价量快照：regularMarketPrice、previousClose、即时跌幅、即时 PEG 估算。"""
+        ticker = correct_ticker(ticker)
+        info = _fetch_info(ticker)
+        tk = _ticker(ticker)
+        spot = info.get("regularMarketPrice") or info.get("currentPrice")
+        prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
+        intraday_chg = None
+        if spot and prev_close and prev_close > 0:
+            intraday_chg = float(spot / prev_close - 1.0)
+
+        try:
+            income = tk.income_stmt
+        except Exception:  # noqa: BLE001
+            income = None
+
+        base = _base_fundamentals_from_info(
+            ticker, info, income, None, None, mode="daily", source=self.name,
+        )
+        from ..metrics import _pick_growth
+
+        growth, _ = _pick_growth(base)
+        pe = info.get("trailingPE")
+        instant_peg = dividend_adjusted_peg(pe, growth, base.dividend_yield)
+        eps = implied_eps_ttm(spot, pe)
+        pe_min, _ = pe_range_5y(tk, eps)
+
+        return {
+            "ticker": ticker.upper(),
+            "name": base.name,
+            "spot": spot,
+            "previous_close": prev_close,
+            "intraday_change": intraday_chg,
+            "instant_peg": instant_peg,
+            "trailing_pe": pe,
+            "pe_5y_min": pe_min,
+            "sbi_tradable": check_sbi_tradable(
+                ticker, exchange=base.exchange, market_cap=base.market_cap,
+            ),
+            "currency": base.currency,
+        }
 
     def get_quick_screen(self, ticker: str) -> QuickScreen | None:
         ticker = correct_ticker(ticker)

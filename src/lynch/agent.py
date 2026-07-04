@@ -81,7 +81,13 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     if m.is_cyclical:
         tags.append("周期股（高P/E与利润下滑排雷已豁免，反向判定）")
     lines.append(" | ".join(tags))
-    lines.append(f"现价: {_fmt(f.price)} {cur or ''} | 市值: {_fmt(f.market_cap, money=True, currency=cur)}")
+    lines.append(f"现价(spot): {_fmt(f.spot_price or f.price)} {cur or ''} | 市值: {_fmt(f.market_cap, money=True, currency=cur)}")
+    if f.valuation_anchor_price is not None:
+        lines.append(
+            f"财报锚定价({f.valuation_anchor_date or '?'}): "
+            f"{_fmt(f.valuation_anchor_price)} {cur or ''} | "
+            f"锚定P/E: {_fmt(f.valuation_pe)} | 即时P/E: {_fmt(f.spot_pe or f.trailing_pe)}"
+        )
     lines.append("")
     lines.append("— 估值与增长 —")
     growth_str = "数据缺失" if m.growth_rate is None else f"{m.growth_rate * 100:.1f}%"

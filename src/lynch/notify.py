@@ -267,3 +267,31 @@ def send_sniper_alert(
         f"---\n\n{narrative}\n"
     )
     return send_email(subject, body)
+
+
+def send_realtime_sniper_alert(
+    *,
+    ticker: str,
+    name: str,
+    change_pct: str,
+    peg: float | None,
+    price: str,
+    pe_5y_min: float | None,
+    narrative: str,
+) -> bool:
+    """盘中深夜特快邮件。"""
+    short = name.split()[0] if name else ticker
+    subject = (
+        f"【🚨林奇深夜特快】{ticker} - {short} 盘中突发暴跌 [{change_pct}]！"
+        f"速去 SBI 账户护航！"
+    )
+    peg_str = f"{peg:.2f}" if peg is not None else "N/A"
+    pe5y_str = f"{pe_5y_min:.1f}" if pe_5y_min is not None else "N/A"
+    body = (
+        f"# 🚨 林奇深夜特快 · {ticker} — {name}\n\n"
+        f"**盘中触发**：相对昨收 {change_pct} ｜ 即时 PEG {peg_str} ｜ "
+        f"5年最低P/E {pe5y_str}\n\n"
+        f"**即时现价**：{price}\n\n"
+        f"---\n\n{narrative}\n"
+    )
+    return send_email(subject, body)

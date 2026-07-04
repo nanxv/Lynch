@@ -1,0 +1,38 @@
+name: Lynch Realtime Sniper
+
+# 美股盘中实时狙击（独立于日报/周报）
+# JST 周二~周六 23:00–次日 04:30 ≈ UTC 周二~周六 14:00–19:30（每 30 分钟）
+# GitHub cron: 分 0,30 · 时 14-19 · 星期 2-6（UTC）
+on:
+  schedule:
+    - cron: "0,30 14-19 * * 2-6"
+  workflow_dispatch:
+
+jobs:
+  sniper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run realtime sniper
+        env:
+          DATA_PROVIDER: ${{ vars.DATA_PROVIDER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: python scripts/run_realtime_sniper.py

@@ -42,6 +42,11 @@ def format_monthly_block(
     peg_now: float | None,
     peg_prior: float | None,
     peg_delta: float | None,
+    price_now: float | None,
+    price_1mo_ago: float | None,
+    pe_now: float | None,
+    pe_1mo_ago: float | None,
+    peg_1mo_ago: float | None,
     currency: str | None,
 ) -> tuple[str, dict[str, Any]]:
     rsi_note = "N/A"
@@ -55,16 +60,22 @@ def format_monthly_block(
     peg_prior_s = f"{peg_prior:.2f}" if peg_prior is not None else "无上月存档"
     peg_now_s = f"{peg_now:.2f}" if peg_now is not None else "N/A"
     peg_delta_s = _pct_str(peg_delta) if peg_delta is not None else "N/A"
+    peg_1mo_s = f"{peg_1mo_ago:.2f}" if peg_1mo_ago is not None else "N/A"
+    pe_now_s = f"{pe_now:.2f}" if pe_now is not None else "N/A"
+    pe_1mo_s = f"{pe_1mo_ago:.2f}" if pe_1mo_ago is not None else "N/A"
+    px_now_s = _money_str(price_now, currency) if price_now else "N/A"
+    px_1mo_s = _money_str(price_1mo_ago, currency) if price_1mo_ago else "N/A"
     block = (
         "【月度动量与估值漂移 · 高敏数据（无新财报，以价量为主）】\n"
+        f"- 当前收盘价: {px_now_s} | 约1个月前收盘价: {px_1mo_s}\n"
+        f"- 当前隐含 P/E: {pe_now_s} | 约1个月前隐含 P/E: {pe_1mo_s}\n"
+        f"- 当前股息修正 PEG: {peg_now_s} | 约1个月前 PEG: {peg_1mo_s}\n"
         f"- 近20交易日涨跌幅: {_pct_str(change_20d)}\n"
         f"- RSI(14): {rsi_note}\n"
-        f"- 股息修正 PEG（当前）: {peg_now_s}\n"
-        f"- 股息修正 PEG（约一月前）: {peg_prior_s}\n"
-        f"- PEG 月度变化: {peg_delta_s}\n"
+        f"- PEG 月度变化(存档对比): {peg_delta_s}\n"
         "\n"
-        "⚠️ 月报会诊请优先基于以上价量/估值漂移判断「故事是否变化、回调是否砸出击球区」，"
-        "勿用年度财报臆造本季变化。"
+        "⚠️ 核心任务：对比历史与当前估值，判断这一个月内估值是扩张还是收缩；"
+        "当前月度回调是否砸出了新的击球区。禁止用年度财报臆造本月基本面突变。"
     )
     raw = {
         "change_20d": change_20d,
@@ -72,6 +83,9 @@ def format_monthly_block(
         "peg_now": peg_now,
         "peg_prior": peg_prior,
         "peg_delta": peg_delta,
+        "price_1mo_ago": price_1mo_ago,
+        "pe_1mo_ago": pe_1mo_ago,
+        "peg_1mo_ago": peg_1mo_ago,
     }
     return block, raw
 
@@ -149,6 +163,9 @@ def format_annual_block(
     roic_proxy_series: dict[int, float],
     currency: str | None,
     span_years: int,
+    pe_5y_min: float | None = None,
+    pe_5y_avg: float | None = None,
+    spot_pe: float | None = None,
 ) -> tuple[str, dict[str, Any]]:
     def _yr_series(d: dict[int, float], pct: bool = False) -> str:
         if not d:
@@ -160,8 +177,17 @@ def format_annual_block(
             parts.append(f"{y}:{_pct_str(v) if pct else _money_str(v, currency)}")
         return " → ".join(parts)
 
+    pe_line = ""
+    if pe_5y_avg is not None:
+        pe_line += f"- 5年历史平均隐含 P/E: {pe_5y_avg:.2f}\n"
+    if pe_5y_min is not None:
+        pe_line += f"- 5年历史最低隐含 P/E: {pe_5y_min:.2f}\n"
+    if spot_pe is not None and pe_5y_avg is not None:
+        pe_line += f"- 当前即时 P/E: {spot_pe:.2f}\n"
+
     block = (
         f"【长期历史视野 · {span_years}年资本配置（年报会诊权威口径）】\n"
+        f"{pe_line}"
         f"- 最近财年股票回购总额: {_money_str(buyback_latest_year, currency)}\n"
         f"- 最近财年股息支付总额: {_money_str(dividend_paid_latest_year, currency)}\n"
         "\n"
@@ -178,6 +204,7 @@ def format_annual_block(
         f"{_yr_series(roic_proxy_series, pct=True)}\n"
         "\n"
         "⚠️ 年终审视请站在 3-5 年尺度判断类型是否退化；"
+        "结合 5 年 P/E 水位线判断当前是否历史低估；"
         "必须输出【清仓剔除名单】（故事变坏或增长迁移的标的）。"
     )
     raw = {
@@ -185,5 +212,7 @@ def format_annual_block(
         "dividend_paid_latest_year": dividend_paid_latest_year,
         "gross_margin_series": gross_margin_series,
         "span_years": span_years,
+        "pe_5y_min": pe_5y_min,
+        "pe_5y_avg": pe_5y_avg,
     }
     return block, raw

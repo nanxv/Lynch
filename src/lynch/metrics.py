@@ -128,7 +128,7 @@ def _peg_metric(
 ) -> tuple[float | None, Metric]:
     """股息修正 PEG = P/E ÷ (CAGR% + 股息率%)，含 35% 增长上限锚定与周期股豁免。"""
     label = "股息修正PEG (P/E÷(CAGR+股息))"
-    pe = f.trailing_pe
+    pe = f.valuation_pe if f.valuation_pe is not None else f.trailing_pe
     div = f.dividend_yield or 0.0  # yfinance 已是百分比
 
     if pe is None or pe <= 0:

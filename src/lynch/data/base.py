@@ -57,6 +57,18 @@ class Fundamentals:
     report_mode: str = "weekly"
     granularity_block: str = ""  # 模式专属高敏数据（月/季/年）
 
+    # ── 多维时间轴（估值锚点，避免现价评判旧财报）──
+    spot_price: float | None = None
+    spot_pe: float | None = None
+    valuation_anchor_date: str | None = None
+    valuation_anchor_price: float | None = None
+    valuation_pe: float | None = None
+    price_1mo_ago: float | None = None
+    pe_1mo_ago: float | None = None
+    peg_1mo_ago: float | None = None
+    pe_5y_min: float | None = None
+    pe_5y_avg: float | None = None
+
 
 @dataclass(frozen=True)
 class QuickScreen:
