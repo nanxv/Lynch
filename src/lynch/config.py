@@ -15,12 +15,18 @@ TICKER_CORRECTIONS: dict[str, str] = {
 }
 
 # ── 全市场海选（漏斗顶端）───────────────────────────────────────
-# 成分股来源：sp500 / nasdaq100 / jpx（日股全量，约4000只，较慢，需显式开启）
+# 成分股来源：
+#   us         : SEC 官方全美股全量（约1万只，配合随机抽样，默认）
+#   sp500      : 维基 S&P 500
+#   nasdaq100  : 维基 NASDAQ-100
+#   jpx        : 日股全量（约4000只，较慢，需显式开启）
 UNIVERSE_SOURCES = [
     s.strip().lower()
-    for s in os.environ.get("UNIVERSE_SOURCES", "sp500,nasdaq100").split(",")
+    for s in os.environ.get("UNIVERSE_SOURCES", "us").split(",")
     if s.strip()
 ]
+# 全美股（us 源）每次运行随机无放回抽样的数量：既防 yfinance 被封，又能一周内轮动扫遍全市场。
+US_MARKET_SAMPLE_SIZE = int(os.environ.get("US_MARKET_SAMPLE_SIZE", "500"))
 # 单次最多扫描多少只（防止 GitHub Actions 超时 / yfinance 被封）。
 MAX_UNIVERSE_SCAN = int(os.environ.get("MAX_UNIVERSE_SCAN", "1200"))
 # 第一层漏斗并发线程数（过高会触发 yfinance 限流/封禁）。

@@ -1,6 +1,7 @@
 """全市场成分股动态抓取（漏斗顶端）。
 
 来源：
+- us         : SEC 官方全美股全量接口（约1万只），配合随机无放回抽样防封
 - sp500      : 维基百科 S&P 500 成分股表
 - nasdaq100  : 维基百科 NASDAQ-100 成分股表
 - jpx        : 日本交易所(JPX)官方每月发布的上市公司全量 Excel（固定链接）
@@ -11,14 +12,24 @@
 from __future__ import annotations
 
 import io
+import random
 
 import pandas as pd
 import requests
 
-from .config import MAX_UNIVERSE_SCAN, UNIVERSE_SOURCES, correct_ticker
+from .config import (
+    MAX_UNIVERSE_SCAN,
+    UNIVERSE_SOURCES,
+    US_MARKET_SAMPLE_SIZE,
+    correct_ticker,
+)
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Lynch-Agent)"}
 _TIMEOUT = 30
+
+# SEC 要求请求头带可识别的 User-Agent（含联系方式），否则会被拒绝。
+_SEC_HEADERS = {"User-Agent": "Lynch Stock Agent contact@lynch-agent.example"}
+_SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 
 _SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 _NASDAQ100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
@@ -30,6 +41,24 @@ def _read_html_tables(url: str) -> list[pd.DataFrame]:
     resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
     resp.raise_for_status()
     return pd.read_html(io.StringIO(resp.text))
+
+
+def _us_sec() -> list[str]:
+    """SEC 官方全美股：company_tickers.json → 纯字母常规代码（剔除含 - / . 的复杂类股份）。"""
+    resp = requests.get(_SEC_TICKERS_URL, headers=_SEC_HEADERS, timeout=_TIMEOUT)
+    resp.raise_for_status()
+    data = resp.json()
+    # 结构为 {"0": {"cik_str":..,"ticker":"AAPL","title":..}, "1": {...}, ...}
+    rows = data.values() if isinstance(data, dict) else data
+    seen: set[str] = set()
+    out: list[str] = []
+    for row in rows:
+        t = str(row.get("ticker", "")).strip().upper()
+        # 只保留纯字母常规美股代码（剔除 BRK-B / BF.B 等含 - 或 . 的类股份）
+        if t and t.isalpha() and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
 
 
 def _sp500() -> list[str]:
@@ -64,20 +93,32 @@ def _jpx() -> list[str]:
     return out
 
 
-_FETCHERS = {"sp500": _sp500, "nasdaq100": _nasdaq100, "jpx": _jpx}
+_FETCHERS = {"us": _us_sec, "sp500": _sp500, "nasdaq100": _nasdaq100, "jpx": _jpx}
 
 
-def get_universe(sources: list[str] | None = None, cap: int | None = None) -> list[str]:
-    """聚合成分股列表：纠错 → 去重 → 截断到上限。"""
+def get_universe(
+    sources: list[str] | None = None,
+    cap: int | None = None,
+    *,
+    us_sample: int | None = None,
+    seed: int | None = None,
+) -> list[str]:
+    """聚合成分股列表：抓取 → 纠错去重 → (us 源随机抽样) → 截断到上限。
+
+    us_sample: 全美股(us 源)每次随机无放回抽样的数量；None 时用配置默认。
+    seed: 抽样随机种子（仅测试用），默认 None = 每次随机（一周轮动扫遍全市场）。
+    """
     sources = sources or UNIVERSE_SOURCES
     cap = MAX_UNIVERSE_SCAN if cap is None else cap
+    us_sample = US_MARKET_SAMPLE_SIZE if us_sample is None else us_sample
+    rng = random.Random(seed)
 
     seen: set[str] = set()
     universe: list[str] = []
     for src in sources:
         fetch = _FETCHERS.get(src)
         if fetch is None:
-            print(f"⚠️  未知的成分股来源: {src}（可选 sp500/nasdaq100/jpx），跳过。")
+            print(f"⚠️  未知的成分股来源: {src}（可选 us/sp500/nasdaq100/jpx），跳过。")
             continue
         try:
             tickers = fetch()
@@ -85,6 +126,12 @@ def get_universe(sources: list[str] | None = None, cap: int | None = None) -> li
         except Exception as exc:  # noqa: BLE001
             print(f"⚠️  {src} 抓取失败，跳过：{exc}")
             continue
+
+        # 全美股全量太大，直接并发 1 万次极易被 Yahoo 封 IP → 随机无放回抽样。
+        if src == "us" and us_sample and len(tickers) > us_sample:
+            tickers = rng.sample(tickers, us_sample)
+            print(f"🎲 us: 从全量随机抽样 {us_sample} 只（防封 + 一周轮动扫全市场）")
+
         for t in tickers:
             ct = correct_ticker(t)
             if ct and ct not in seen:
