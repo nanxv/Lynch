@@ -3,6 +3,10 @@
 .alert_cache.json
 # 只忽略根目录的数据库文件夹，避免误伤 src/lynch/data/ 等代码包
 /data/
+# 版权保护：原著全文与本地 RAG 索引只留本地，绝不进版本库
+/books/
+knowledge/raw/
+*.rag.json
 __pycache__/
 *.pyc
 .DS_Store

@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import llm
+from . import knowledge, llm
 from .data import Fundamentals, get_provider
 from .data.base import BaseDataProvider
 from .metrics import LynchMetrics, compute_metrics
 from .prompt import SYSTEM_PROMPT
+
+
+def _system_prompt() -> str:
+    """system prompt = 人设 SOP + 林奇心法包（自撰提炼知识库）。"""
+    playbook = knowledge.load_playbook()
+    if playbook:
+        return f"{SYSTEM_PROMPT}\n\n---\n\n# 附：林奇心法包（判断时严格遵循）\n\n{playbook}"
+    return SYSTEM_PROMPT
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 
@@ -110,12 +118,21 @@ def analyze_company(
     if not data_only:
         note = f"\n\n用户补充说明：{user_note}" if user_note.strip() else ""
         ctx = f"\n\n【本次分析时点专项要求】\n{mode_context}" if mode_context.strip() else ""
+        # 本地 RAG：按公司类型/行业检索原著相关片段（无索引/无 key 时降级为空）
+        ref = ""
+        try:
+            query = f"{m.company_type} {f.sector or ''} {f.industry or ''} {f.name or f.ticker} 如何估值与买卖决策"
+            block = knowledge.build_reference_block(query, k=3)
+            if block:
+                ref = f"\n\n{block}"
+        except Exception:  # noqa: BLE001
+            ref = ""
         user_content = (
-            f"请按林奇 SOP 分析下面这家公司。\n\n{data_block}{note}{ctx}\n\n"
+            f"请按林奇 SOP 分析下面这家公司。\n\n{data_block}{note}{ctx}{ref}\n\n"
             "请严格引用上面的真实数字，输出四步分析 + 最终裁决，"
             "并在最末尾给出唯一的【行动指令】（🟢强烈买入 / 🟡观察仓 / 🔴卖出避开 / ⚪钝感持有）。"
         )
-        narrative = llm.generate(SYSTEM_PROMPT, user_content, model=model)
+        narrative = llm.generate(_system_prompt(), user_content, model=model)
 
     return LynchAnalysis(
         ticker=f.ticker,
