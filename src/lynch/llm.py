@@ -16,6 +16,33 @@ _FALLBACK_MODEL = "gemini-2.5-flash"
 DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip()
 SNIPER_DRILL_MAX_TOKENS = 2048  # 日间狙击「两分钟演练」专用上限
 
+# 各报告周期注入 Gemini 的专项上下文（须与数据颗粒度 mode 对齐）
+MODE_CONTEXT: dict[str, str] = {
+    "weekly": "",
+    "monthly": (
+        "现在是【月度动量会诊】时点（月末，无新财报）。\n"
+        "你必须优先使用「月度动量与估值漂移」区块中的真实数字（20日涨跌、RSI、PEG 月度变化）。\n"
+        "核心任务：评估公司基本面故事本月是否发生变化；当前月度回调是否砸出了新的击球区。\n"
+        "禁止用年度财报臆造本月基本面突变。"
+    ),
+    "quarterly": (
+        "现在是【财报季度会诊】时点（季度末）。\n"
+        "你必须优先使用「真实季度财报」区块中的 QoQ / 单季同比数据，"
+        "判断本季存货积压是否加速、利润率是否遭挤压。\n"
+        "下方年度序列为长期背景，不可替代季度高敏结论。"
+    ),
+    "annual": (
+        "现在是【年终持仓清理】时点。你必须优先使用「长期历史视野」区块（5-10年趋势、"
+        "回购/股息、毛利率与 ROIC 代理）。\n"
+        "站在 3-5 年宏观视角严厉审视：公司类型是否退化（快速增长型是否撞天花板）。\n"
+        "对故事变坏或增长迁移的标的，必须在文末单独列出【清仓剔除名单】及理由。"
+    ),
+}
+
+
+def get_mode_context(mode: str) -> str:
+    return MODE_CONTEXT.get(mode, "")
+
 
 def is_configured() -> bool:
     return bool(os.getenv("GEMINI_API_KEY"))

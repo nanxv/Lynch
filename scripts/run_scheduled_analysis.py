@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """彼得·林奇自动化流水线（GitHub Actions 后台，邮件版，双层漏斗）。
 
-【立体化投研周期】坚决拒绝盘中实时告警/高频轮询，只有四种静默节奏：
-  --mode daily      日报（周二~周六，美股收盘后）：纯代码量化，不调用 Gemini，秒级。
-                    重点抓「单日暴跌>5%（特价机会）」「存货暴增（红灯）」。
-  --mode weekly     周报（每周六）：启动 Gemini，对初筛前 N 只做完整林奇四步裁决 + 成本熔断。
-  --mode quarterly  财报季会诊（1/4/7/10 月最后一天）：Gemini 侧重资产负债表环比恶化/改善 + CAGR 是否脱轨。
-  --mode annual     年终审视（12/31）：Gemini 做持仓清理，审视成长性迁移，给出【剔除自选股池名单】。
+【立体化投研周期】坚决拒绝盘中实时告警/高频轮询，五种静默节奏：
+  --mode daily      日报：纯代码量化 + 全市场 SBI 狙击（例外调 Gemini）
+  --mode weekly     周报：年度口径 + Gemini 四步裁决
+  --mode monthly    月报（月末最后交易日）：价量/RSI/PEG 漂移 + Gemini 动量会诊
+  --mode quarterly  季报：真实季度财报 QoQ/YoY + Gemini 财报季会诊
+  --mode annual     年报：5-10 年长周期资本配置 + Gemini 清仓审视
 
 【双层漏斗 / 沙漏机制】（--scope full 时）：
   全市场成分股(万级) → 第一层纯代码硬指标漏斗(刷掉95%) → 第二层 AI 上限熔断(≤MAX_AI_ANALYSIS_COUNT) → 邮件
@@ -67,54 +67,30 @@ from src.lynch.signals import (  # noqa: E402
     extract_signal,
     fcf_yield,
 )
-from src.lynch.llm import LLMError  # noqa: E402
+from src.lynch.llm import LLMError, get_mode_context  # noqa: E402
+from src.lynch.report_modes import (  # noqa: E402
+    AI_MODES,
+    MODE_TITLES,
+    SUBJECT_PREFIX,
+    is_ai_mode,
+    is_last_trading_day_of_month,
+    normalize_mode,
+)
 from src.lynch.universe import get_universe  # noqa: E402
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
-
-# 需要调用 Gemini 的分析型模式（daily 为纯量化，不调用）。
-_AI_MODES = ("weekly", "quarterly", "annual")
-
-# 各投研周期注入 Gemini 的专项上下文（附加到用户提示，切换关注重点）。
-_MODE_CONTEXT = {
-    "weekly": "",
-    "quarterly": (
-        "现在是【财报季度会诊】时点（季度末总结）。除常规四步裁决外，请重点：\n"
-        "1) 对比本季度【资产负债表】相较此前的恶化/改善——长期负债是否上升、股东权益是否被侵蚀、"
-        "现金是否减少、存货是否堆积；\n"
-        "2) 核查【利润复合增长率(CAGR)】是否较历史轨迹脱轨（明显放缓或异常加速），指出趋势拐点；\n"
-        "3) 若资产负债表出现实质性恶化或增长脱轨，即便股价没动也要提前预警。"
-    ),
-    "annual": (
-        "现在是【年终持仓清理】时点。请以一年为尺度严格重估：\n"
-        "1) 公司分类是否发生迁移——原「快速增长型」是否已退化为「稳定增长型」甚至「衰退型」"
-        "（长期增速掉出 20%~25% 区间即视为降级）；\n"
-        "2) 对已丧失成长性/故事变坏的标的，明确给出【是否剔除自选股池】的结论与理由；\n"
-        "3) 对仍具成长性的标的，确认新一年继续持有或加仓的逻辑。"
-    ),
-}
-
-_MODE_TITLE = {
-    "daily": "自选股监控日报",
-    "weekly": "深度分析周报",
-    "quarterly": "财报季度会诊",
-    "annual": "年终持仓审视",
-}
-
-_SUBJECT_PREFIX = {
-    "daily": "【彼得林奇自选股监控】日报",
-    "weekly": "【彼得林奇深度分析】周报",
-    "quarterly": "【彼得林奇财报季会诊】季报",
-    "annual": "【彼得林奇年终审视】年报",
-}
 
 # AI 行动指令常量（与 src/lynch/signals.py 同步，供本脚本渲染兜底）
 _SIGNAL_UNKNOWN_ORDER = SIGNAL_UNKNOWN
 
 
-def _verdict_dashboard(verdicts: list[tuple]) -> str:
+def _verdict_dashboard(verdicts: list[tuple], *, ai_count: int = 0, ai_mode: bool = False) -> str:
     """双轨 AI 裁决看板（委托 notify 模块渲染）。"""
-    return notify.render_dual_track_verdict_dashboard(verdicts)
+    return notify.render_dual_track_verdict_dashboard(
+        verdicts,
+        ai_count=ai_count,
+        show_when_empty=ai_mode,
+    )
 
 
 # ── 候选集构建 ─────────────────────────────────────────────────
@@ -285,7 +261,7 @@ def build_briefing(
     flat_sections: list[str] | None = None,
 ) -> str:
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M JST")
-    title = _MODE_TITLE.get(mode, "自选股监控日报")
+    title = MODE_TITLES.get(mode, "自选股监控日报")
     funnel = ""
     if stats.get("universe"):
         funnel = f"｜ 漏斗 {stats['universe']}→{stats['survivors']}只"
@@ -308,7 +284,7 @@ def build_briefing(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="彼得·林奇自动化流水线（双层漏斗·邮件版）")
-    parser.add_argument("--mode", choices=["daily", "weekly", "quarterly", "annual"],
+    parser.add_argument("--mode", choices=["daily", "weekly", "monthly", "quarterly", "annual"],
                         default="daily")
     parser.add_argument("--scope", choices=["watchlist", "full"], default="watchlist",
                         help="watchlist=仅必看列表 / full=全市场双层漏斗")
@@ -316,11 +292,17 @@ def main() -> int:
     parser.add_argument("--tickers", nargs="*", help="手动指定代码，覆盖清单")
     parser.add_argument("--max-universe", type=int, default=None, help="海选池上限（覆盖 MAX_UNIVERSE_SCAN）")
     parser.add_argument("--no-email", action="store_true", help="不发邮件（仅打印）")
+    parser.add_argument("--force", action="store_true", help="跳过月报「月末交易日」门禁（调试用）")
     args = parser.parse_args()
 
+    args.mode = normalize_mode(args.mode)
+    if args.mode == "monthly" and not args.force and not is_last_trading_day_of_month():
+        print("ℹ️  今日非当月最后交易日，月报跳过（可用 --force 强制执行）。")
+        return 0
+
     provider = get_provider()
-    ai_mode = args.mode in _AI_MODES
-    mode_context = _MODE_CONTEXT.get(args.mode, "")
+    ai_mode = is_ai_mode(args.mode)
+    mode_context = get_mode_context(args.mode)
     ai_available = ai_mode and llm.is_configured()
     if ai_mode and not ai_available:
         print(f"⚠️  {args.mode} 模式但未检测到 GEMINI_API_KEY，本次全部降级为仅硬指标。\n")
@@ -360,6 +342,7 @@ def main() -> int:
                 q.ticker, user_note=note, data_only=not use_ai, provider=provider,
                 mode_context=mode_context if use_ai else "",
                 story_diff_context=story_ctx,
+                report_mode=args.mode,
             )
             counts["analyzed"] += 1
             counts["ai" if use_ai else "data_only"] += 1
@@ -389,21 +372,26 @@ def main() -> int:
                     cycs.append((q.ticker, display_name, cyc))
 
             if ai_mode:
-                sig = extract_signal(a.narrative)
                 peg = a.metrics.peg
                 fcf_y = fcf_yield(a.fundamentals.market_cap, a.fundamentals.free_cashflow)
-                if sig:
-                    order, label, color, sig_reason = sig
-                    verdicts.append((
-                        order, q.ticker, display_name, label, color, sig_reason, sbi_ok, peg, fcf_y,
-                    ))
-                    entries.append((order, seq, _render_weekly(a, q.is_priority, label), sbi_ok))
-                elif a.narrative:
-                    verdicts.append((
-                        _SIGNAL_UNKNOWN_ORDER, q.ticker, display_name,
-                        _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, "", sbi_ok, peg, fcf_y,
-                    ))
-                    entries.append((_SIGNAL_UNKNOWN_ORDER, seq, _render_weekly(a, q.is_priority), sbi_ok))
+                if use_ai:
+                    sig = extract_signal(a.narrative)
+                    if sig:
+                        order, label, color, sig_reason = sig
+                        verdicts.append((
+                            order, q.ticker, display_name, label, color, sig_reason, sbi_ok, peg, fcf_y,
+                        ))
+                        entries.append((order, seq, _render_weekly(a, q.is_priority, label), sbi_ok))
+                    else:
+                        verdicts.append((
+                            _SIGNAL_UNKNOWN_ORDER, q.ticker, display_name,
+                            _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, "", sbi_ok, peg, fcf_y,
+                        ))
+                        entries.append((
+                            _SIGNAL_UNKNOWN_ORDER, seq,
+                            _render_weekly(a, q.is_priority, _SIGNAL_UNKNOWN_LABEL if a.narrative else ""),
+                            sbi_ok,
+                        ))
                 else:
                     entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, _render_weekly(a, q.is_priority), sbi_ok))
             else:
@@ -416,7 +404,6 @@ def main() -> int:
                     pass
                 if (
                     args.mode == "daily"
-                    and q.is_priority
                     and check_daily_sniper_trigger(a.fundamentals, a.metrics, day_change)
                 ):
                     try:
@@ -448,7 +435,7 @@ def main() -> int:
     recs = recs[:20]
 
     date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
-    subject = f"{_SUBJECT_PREFIX.get(args.mode, _SUBJECT_PREFIX['daily'])} - {date_str}"
+    subject = f"{SUBJECT_PREFIX.get(args.mode, SUBJECT_PREFIX['daily'])} - {date_str}"
     # 主题带上优质股/红灯数量，手机推送一眼可见
     tags = []
     buy_count = sum(1 for v in verdicts if v[0] == 0 and v[6])
@@ -472,7 +459,7 @@ def main() -> int:
     top_block = (
         _recommend_block(recs)
         + _red_flag_block(reds)
-        + _verdict_dashboard(verdicts)
+        + _verdict_dashboard(verdicts, ai_count=counts["ai"], ai_mode=ai_mode)
         + _cyclical_block(cycs)
     )
     briefing = build_briefing(

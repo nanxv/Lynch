@@ -6,18 +6,20 @@ name: Lynch Analysis (Email)
 #   Weekly 周报:    '0 3 * * 6'    = UTC 周六 03:00（美股周五收盘后）     = JST 周六 12:00
 #   Quarterly 季报: '0 5 31 1,7,10 *' + '0 5 30 4 *' = 1/4/7/10 月最后一天（Gemini 财报季会诊）
 #   Annual 年报:    '0 5 31 12 *'  = 12/31 年终持仓审视（Gemini 剔除自选股池）
-# 通过 github.event.schedule 判断由哪条 cron 触发，选择 daily / weekly / quarterly / annual。
+#   Monthly 月报:  '0 21 28-31 * *' = 每月 28-31 日 UTC 21:00（脚本内校验是否当月最后交易日）
+# 通过 github.event.schedule 判断由哪条 cron 触发，选择 daily / weekly / monthly / quarterly / annual。
 on:
   schedule:
     - cron: "0 21 * * 1-5"
     - cron: "0 3 * * 6"
+    - cron: "0 21 28-31 * *"
     - cron: "0 5 31 1,7,10 *"
     - cron: "0 5 30 4 *"
     - cron: "0 5 31 12 *"
   workflow_dispatch:
     inputs:
       mode:
-        description: "运行模式 (daily / weekly / quarterly / annual)"
+        description: "运行模式 (daily / weekly / monthly / quarterly / annual)"
         required: false
         default: "daily"
       scope:
@@ -53,6 +55,7 @@ jobs:
             "0 3 * * 6")                    mode=weekly ;;
             "0 5 31 12 *")                  mode=annual ;;
             "0 5 31 1,7,10 *"|"0 5 30 4 *") mode=quarterly ;;
+            "0 21 28-31 * *")               mode=monthly ;;
             "0 21 * * 1-5")                 mode=daily ;;
             *)                              mode="${{ github.event.inputs.mode }}"; mode="${mode:-daily}" ;;
           esac

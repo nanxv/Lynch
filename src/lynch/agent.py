@@ -56,7 +56,23 @@ def _series_str(series: dict[int, float], money: bool = True,
 def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     cur = f.currency
     lines: list[str] = []
-    lines.append("【已核实的真实财务数据】(来源: %s)" % f.source)
+
+    # 模式专属高敏数据置顶（季/月/年会诊的权威口径）
+    if f.granularity_block:
+        lines.append(f.granularity_block)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    mode_note = ""
+    if f.report_mode == "quarterly":
+        mode_note = "（以下年度序列为长期背景；季度会诊请以顶部季度区块为准）"
+    elif f.report_mode == "monthly":
+        mode_note = "（以下年度基本面为估值锚；月度会诊请以顶部价量数据为准）"
+    elif f.report_mode == "annual":
+        mode_note = "（以下常规指标辅助；年终审视请以顶部长周期资本配置为准）"
+
+    lines.append(f"【已核实的真实财务数据】{mode_note} (来源: {f.source} | 模式: {f.report_mode})")
     lines.append(f"公司: {f.name or f.ticker} ({f.ticker})")
     lines.append(f"行业: {f.sector or '?'} / {f.industry or '?'}")
     tags = [f"代码初判类型: {m.company_type}"]
@@ -105,20 +121,23 @@ def analyze_company(
     provider: BaseDataProvider | None = None,
     mode_context: str = "",
     story_diff_context: str = "",
+    report_mode: str = "weekly",
 ) -> LynchAnalysis:
     """完整分析一家公司。data_only=True 时跳过 LLM，仅返回硬指标数据区块。
 
-    mode_context: 投研周期上下文（周报/财报季会诊/年终清理），注入到用户提示中，
-    让 Gemini 针对不同时间节点调整关注重点。
+    report_mode: daily/weekly/monthly/quarterly/annual，决定底层数据颗粒度。
+    mode_context: 投研周期 Prompt 专项要求（默认由 llm.get_mode_context 提供）。
     """
-    f = (provider or get_provider()).get_fundamentals(ticker)
+    prov = provider or get_provider()
+    f = prov.get_fundamentals(ticker, mode=report_mode)
     m = compute_metrics(f)
     data_block = build_data_block(f, m)
 
     narrative: str | None = None
     if not data_only:
         note = f"\n\n用户补充说明：{user_note}" if user_note.strip() else ""
-        ctx = f"\n\n【本次分析时点专项要求】\n{mode_context}" if mode_context.strip() else ""
+        ctx_text = mode_context.strip() or llm.get_mode_context(report_mode)
+        ctx = f"\n\n【本次分析时点专项要求】\n{ctx_text}" if ctx_text else ""
         story = f"\n\n{story_diff_context}" if story_diff_context.strip() else ""
         # 本地 RAG：按公司类型/行业检索原著相关片段（无索引/无 key 时降级为空）
         ref = ""

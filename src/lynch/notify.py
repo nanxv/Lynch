@@ -119,34 +119,50 @@ def _render_verdict_groups(
 
 def render_dual_track_verdict_dashboard(
     verdicts: list[tuple],
+    *,
+    ai_count: int | None = None,
+    show_when_empty: bool = False,
 ) -> str:
-    """双轨 AI 裁决看板：SBI 免税直通车 + 硬核场外深挖。"""
-    if not verdicts:
+    """双轨 AI 裁决看板：SBI 免税直通车 + 硬核场外深挖。
+
+    ai_count: 实际送入 Gemini 的数量（用于标题「N只 AI 深度分析」）。
+    show_when_empty: 周报/季报/年报模式下即使 verdicts 为空也保留看板框架。
+    """
+    n_ai = ai_count if ai_count is not None else len(verdicts)
+    if not verdicts and not show_when_empty:
         return ""
 
     lines = [
-        f"> ## 🧠 智能体最终裁决看板（结论先行 · 双轨分流 · {len(verdicts)}只 AI 深度分析）",
+        f"> ## 🧠 智能体最终裁决看板（结论先行 · 双轨分流 · {n_ai}只 AI 深度分析）",
         ">",
         "> **【赛道一：🏦 SBI / NISA 免税直通车专区】**",
         "> *纽交所/纳斯达克主板 · 市值≥3亿美元 · 手机 SBI 可直购*",
         ">",
     ]
-    lines.extend(_render_verdict_groups(
-        verdicts,
-        title="🏦 免税直通车",
-        empty_note="本次暂无 SBI 可直购标的的 AI 裁决。",
-        filter_fn=lambda v: v[6],
-    ))
+    if not verdicts:
+        lines.append("> 本次 AI 分析暂未解析出【行动指令】，请查看下方详情区完整叙述。")
+        lines.append(">")
+    else:
+        lines.extend(_render_verdict_groups(
+            verdicts,
+            title="🏦 免税直通车",
+            empty_note="本次暂无 SBI 可直购标的的 AI 裁决。",
+            filter_fn=lambda v: v[6],
+        ))
     lines.append(">")
     lines.append("> **【赛道二：🌀 硬核 / 非主板深挖区（盈透/盛宝限定）】**")
     lines.append("> *OTC/超微盘 · SBI 买不到 · 仅展示 AI 判定有价值的生僻股*")
     lines.append(">")
-    lines.extend(_render_verdict_groups(
-        verdicts,
-        title="🌀 硬核深挖",
-        empty_note="本次暂无值得深挖的场外/超微盘 Alpha。",
-        filter_fn=lambda v: (not v[6]) and v[0] <= _HARDCORE_MAX_ORDER,
-    ))
+    if verdicts:
+        lines.extend(_render_verdict_groups(
+            verdicts,
+            title="🌀 硬核深挖",
+            empty_note="本次暂无值得深挖的场外/超微盘 Alpha。",
+            filter_fn=lambda v: (not v[6]) and v[0] <= _HARDCORE_MAX_ORDER,
+        ))
+    else:
+        lines.append("> 本次暂无值得深挖的场外/超微盘 Alpha。")
+        lines.append(">")
     lines.append("> *结论先行：赛道一随时可下单；赛道二仅供专业券商账户参考。*")
     lines.append("")
     lines.append("---")

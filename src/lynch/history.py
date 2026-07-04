@@ -92,6 +92,41 @@ def load_previous(ticker: str, *, before: date | None = None) -> HistoryRecord |
     return None
 
 
+def load_record_near_days_ago(ticker: str, days: int = 30) -> HistoryRecord | None:
+    """读取约 N 天前最近一条存档（月报 PEG 对比用）。"""
+    if not HISTORY_DIR.exists():
+        return None
+    from datetime import timedelta
+
+    target = date.today() - timedelta(days=days)
+    ticker = ticker.upper()
+    best: HistoryRecord | None = None
+    best_delta = 10_000
+    for path in sorted(HISTORY_DIR.glob("*.jsonl")):
+        try:
+            file_date = date.fromisoformat(path.stem)
+        except ValueError:
+            continue
+        if file_date > date.today():
+            continue
+        delta = abs((file_date - target).days)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("ticker", "").upper() != ticker:
+                continue
+            rec = HistoryRecord(**data)
+            if delta < best_delta:
+                best_delta = delta
+                best = rec
+    return best
+
+
 def build_story_diff_context(prev: HistoryRecord) -> str:
     """注入 User Prompt 的历史对比上下文。"""
     peg = f"{prev.peg:.2f}" if prev.peg is not None else "N/A"

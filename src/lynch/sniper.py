@@ -49,7 +49,7 @@ def run_sniper_alert(
         print(f"  ℹ️  {ticker} 狙击触发但无 GEMINI_API_KEY，跳过加急邮件。")
         return False
 
-    f = provider.get_fundamentals(ticker)
+    f = provider.get_fundamentals(ticker, mode="daily")
     m = compute_metrics(f)
     if day_change is None:
         day_change = provider.get_daily_price_change(ticker)

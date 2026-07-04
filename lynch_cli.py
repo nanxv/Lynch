@@ -30,7 +30,8 @@ from src.lynch.history import (  # noqa: E402
     load_previous,
     record_from_analysis,
 )
-from src.lynch.llm import LLMError  # noqa: E402
+from src.lynch.llm import LLMError, get_mode_context  # noqa: E402
+from src.lynch.report_modes import normalize_mode  # noqa: E402
 from src.lynch.signals import extract_signal  # noqa: E402
 
 
@@ -39,6 +40,9 @@ def main() -> int:
     parser.add_argument("--ticker", required=True, help="股票代码，如 AMD、4063.T")
     parser.add_argument("--note", default="", help="补充说明（可选）")
     parser.add_argument("--model", default=None, help="覆盖 Gemini 模型名")
+    parser.add_argument("--mode", default="weekly",
+                        choices=["daily", "weekly", "monthly", "quarterly", "annual"],
+                        help="报告周期（决定数据颗粒度）")
     args = parser.parse_args()
 
     if not llm.is_configured():
@@ -46,11 +50,12 @@ def main() -> int:
         return 1
 
     ticker = args.ticker.strip()
+    report_mode = normalize_mode(args.mode)
     provider = get_provider()
     prev = load_previous(ticker)
     story_ctx = build_story_diff_context(prev) if prev else ""
 
-    print(f"📡 闪击模式：正在从 {provider.name} 抓取 {ticker} 最新财务数据…\n")
+    print(f"📡 闪击模式 [{report_mode}]：正在从 {provider.name} 抓取 {ticker} …\n")
     try:
         result = analyze_company(
             ticker,
@@ -59,6 +64,8 @@ def main() -> int:
             model=args.model,
             provider=provider,
             story_diff_context=story_ctx,
+            report_mode=report_mode,
+            mode_context=get_mode_context(report_mode),
         )
     except FundamentalsError as exc:
         print(f"❌ 数据获取失败：{exc}")

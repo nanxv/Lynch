@@ -54,6 +54,8 @@ class Fundamentals:
     exchange: str | None = None
 
     source: str = "base"
+    report_mode: str = "weekly"
+    granularity_block: str = ""  # 模式专属高敏数据（月/季/年）
 
 
 @dataclass(frozen=True)
@@ -85,8 +87,8 @@ class BaseDataProvider(ABC):
 
     # ── 子类必须实现 ──────────────────────────────────────────
     @abstractmethod
-    def _fetch_fundamentals(self, ticker: str) -> Fundamentals:
-        """抓取完整基本面（可能较慢，含财报三张表）。"""
+    def _fetch_fundamentals(self, ticker: str, *, mode: str = "weekly") -> Fundamentals:
+        """按报告周期抓取基本面（颗粒度因 mode 而异）。"""
 
     @abstractmethod
     def get_quick_screen(self, ticker: str) -> QuickScreen | None:
@@ -100,11 +102,11 @@ class BaseDataProvider(ABC):
     def get_daily_price_change(self, ticker: str) -> float | None:
         """最近一个交易日相对前一交易日的涨跌幅（小数，-0.05 = 单日跌 5%）。"""
 
-    # ── 通用（带缓存）─────────────────────────────────────────
-    def get_fundamentals(self, ticker: str) -> Fundamentals:
-        key = ticker.upper()
+    # ── 通用（带缓存，键含 report_mode）────────────────────────
+    def get_fundamentals(self, ticker: str, *, mode: str = "weekly") -> Fundamentals:
+        key = f"{ticker.upper()}::{mode}"
         if key not in self._cache:
-            self._cache[key] = self._fetch_fundamentals(ticker)
+            self._cache[key] = self._fetch_fundamentals(ticker, mode=mode)
         return self._cache[key]
 
     # ── 林奇 SOP 标准 getter（基于完整基本面派生）────────────
