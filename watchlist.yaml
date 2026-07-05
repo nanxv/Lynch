@@ -1,18 +1,20 @@
+# 必看列表 — 重心：美股（SBI/NISA 可直购的 USD 资产）
+# 日股标的已移至 watchlist-jp.yaml（按需手动 --tickers 纳入）
 stocks:
-  - ticker: "4063.T"
-    name: "信越化学"
-    market: JP
-    tier: 1
-    note: "核心池 — 验证周线铁底回踩"
-
   - ticker: "AMD"
     name: "AMD"
     market: US
-    tier: 2
-    note: "常规池 — 验证战术血坑"
+    tier: 1
+    note: "核心池 — 美股林奇会诊"
 
-  - ticker: "6859.T"
-    name: "TOWA"
-    market: JP
+  - ticker: "NVDA"
+    name: "NVIDIA"
+    market: US
     tier: 2
-    note: "常规池 — 验证战术血坑"
+    note: "常规池 — 半导体动量"
+
+  - ticker: "META"
+    name: "Meta"
+    market: US
+    tier: 2
+    note: "常规池 — 平台型增长"

@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>彼得·林奇 Lynch Agent — 系统需求文档</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --border: #2d3a4f;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --purple: #a371f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+      color: var(--text);
+      background: var(--bg);
+      margin: 0;
+      padding: 2rem max(1.5rem, 5vw);
+      max-width: 960px;
+      margin-inline: auto;
+    }
+    h1 { font-size: 1.75rem; border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; }
+    h2 { font-size: 1.35rem; color: var(--accent); margin-top: 2.5rem; }
+    h3 { font-size: 1.1rem; color: var(--purple); margin-top: 1.5rem; }
+    p, li { color: var(--text); }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    .meta { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+    th, td { border: 1px solid var(--border); padding: 0.55rem 0.75rem; text-align: left; vertical-align: top; }
+    th { background: var(--surface); color: var(--accent); }
+    tr:nth-child(even) { background: rgba(26, 35, 50, 0.5); }
+    code { background: #21262d; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.88em; }
+    pre { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-size: 0.82rem; line-height: 1.5; }
+    .flow {
+      background: var(--surface);
+      border-left: 4px solid var(--green);
+      padding: 1rem 1.25rem;
+      margin: 1rem 0;
+      border-radius: 0 8px 8px 0;
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+    }
+    .tag { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; margin-right: 0.35rem; }
+    .tag-daily { background: #1f3d2e; color: var(--green); }
+    .tag-ai { background: #2d2a4a; color: var(--purple); }
+    .tag-sniper { background: #4a2020; color: #ff7b72; }
+    ul { padding-left: 1.25rem; }
+    li { margin: 0.35rem 0; }
+    a { color: var(--accent); }
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  </style>
+</head>
+<body>
+
+<h1>彼得·林奇 Lynch Agent — 系统需求文档</h1>
+
+<div class="meta">
+  <strong>文档版本</strong>：与代码库 <code>main</code> 分支同步（2026-07）<br>
+  <strong>项目路径</strong>：<code>stock-monitor</code> / GitHub <code>nanxv/Lynch</code><br>
+  <strong>定位</strong>：双层漏斗 + 立体化投研周期 + 盘中狙击 + 多维时间轴估值对齐<br>
+  <strong>铁律</strong>：数据为王，不预测宏观；AI 裁决不被 Python 二次篡改
+</div>
+
+<h2>1. 系统总览</h2>
+
+<p>本系统是一套<strong>彼得·林奇式自动化投研流水线</strong>：从全市场/自选股清单出发，经 Yahoo Finance 抓取财务与行情，本地计算林奇硬指标，按报告周期注入不同颗粒度数据，选择性调用 Google Gemini 生成四步会诊，最终组装 Markdown 简报经 Gmail SMTP 发送。</p>
+
+<div class="flow">┌─────────────────────────────────────────────────────────────────────────┐
+│                        调度层 (GitHub Actions / CLI)                      │
+│  run_scheduled_analysis.py  │  run_realtime_sniper.py  │  lynch_cli.py   │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  候选集构建：watchlist.yaml  OR  universe → first_funnel → rank_and_cap │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  数据层：YahooFinanceProvider (mode 决定颗粒度 + temporal 时间轴对齐)    │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  量化层：compute_metrics → PEG / 负债 / 存货 / 净现金 / FCF / SBI 可交易  │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  编排层：analyze_company → build_data_block + RAG + history + Gemini     │
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  输出层：fatal_warnings / 优质股 / 裁决看板 / 双轨详情 → notify.send_email │
+└─────────────────────────────────────────────────────────────────────────┘</div>
+
+<h2>2. 模块与文件映射</h2>
+
+<table>
+  <thead>
+    <tr><th>层级</th><th>职责</th><th>核心文件</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>配置</td><td>环境变量、Ticker 纠错、漏斗阈值</td><td><code>src/lynch/config.py</code></td></tr>
+    <tr><td>成分股池</td><td>SEC / S&P500 / NASDAQ100 / JPX 聚合</td><td><code>src/lynch/universe.py</code></td></tr>
+    <tr><td>数据供应</td><td>抽象基类 + Yahoo 实现</td><td><code>src/lynch/data/base.py</code>, <code>yahoo.py</code></td></tr>
+    <tr><td>时间轴</td><td>财报锚定价、1月前价、5年 P/E 水位</td><td><code>src/lynch/temporal.py</code></td></tr>
+    <tr><td>颗粒度格式化</td><td>月/季/年专属 Markdown 区块</td><td><code>src/lynch/data/granularity.py</code></td></tr>
+    <tr><td>量化引擎</td><td>林奇 PEG、排雷指标、公司分类</td><td><code>src/lynch/metrics.py</code></td></tr>
+    <tr><td>双层漏斗</td><td>粗筛、AI 上限、致命红灯</td><td><code>src/lynch/funnel.py</code></td></tr>
+    <tr><td>AI 编排</td><td>数据区块 + Prompt + Gemini</td><td><code>src/lynch/agent.py</code>, <code>llm.py</code>, <code>prompt.py</code></td></tr>
+    <tr><td>知识/RAG</td><td>心法包 + 本地书籍索引</td><td><code>src/lynch/knowledge.py</code>, <code>knowledge/lynch_playbook.md</code></td></tr>
+    <tr><td>故事线存档</td><td>本地 JSONL 历史对比</td><td><code>src/lynch/history.py</code>, <code>data/history/</code></td></tr>
+    <tr><td>信号解析</td><td>提取【行动指令】、PEG/FCF 排序</td><td><code>src/lynch/signals.py</code></td></tr>
+    <tr><td>狙击</td><td>收盘后 + 盘中实时熔断</td><td><code>src/lynch/sniper.py</code>, <code>sniper_cache.py</code></td></tr>
+    <tr><td>邮件</td><td>Markdown→HTML、双轨看板</td><td><code>src/lynch/notify.py</code></td></tr>
+    <tr><td>报告模式</td><td>daily/weekly/monthly/quarterly/annual</td><td><code>src/lynch/report_modes.py</code></td></tr>
+    <tr><td>主调度</td><td>定时简报流水线</td><td><code>scripts/run_scheduled_analysis.py</code></td></tr>
+    <tr><td>盘中调度</td><td>watchlist 实时扫描</td><td><code>scripts/run_realtime_sniper.py</code></td></tr>
+    <tr><td>CLI 闪击</td><td>单股按需分析</td><td><code>lynch_cli.py</code></td></tr>
+  </tbody>
+</table>
+
+<h2>3. 数据供应层需求</h2>
+
+<h3>3.1 数据源工厂</h3>
+<ul>
+  <li>环境变量 <code>DATA_PROVIDER</code>，默认 <code>yahoo</code>（yfinance）。</li>
+  <li>预留 <code>fmp</code>、<code>jquants</code> 接口，未实现时抛 <code>NotImplementedError</code>。</li>
+  <li>单例缓存：<code>get_fundamentals(ticker, mode=...)</code> 键为 <code>{TICKER}::{mode}</code>。</li>
+</ul>
+
+<h3>3.2 Yahoo Finance 抓取</h3>
+
+<table>
+  <thead>
+    <tr><th>方法</th><th>API</th><th>用途</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>get_quick_screen</code></td><td><code>ticker.info</code> 单次</td><td>第一层漏斗：粗 PEG、负债率、净现金比、SBI 可交易</td></tr>
+    <tr><td><code>_fetch_fundamentals</code></td><td><code>info</code> + 三张年表</td><td>完整林奇 SOP 数据区块</td></tr>
+    <tr><td><code>get_daily_price_change</code></td><td><code>history(5d, 1d)</code></td><td>最近交易日 vs 前一交易日（日报狙击）</td></tr>
+    <tr><td><code>get_stock_price_change</code></td><td><code>history(period, 1d)</code></td><td>区间涨跌幅（日报展示 5 日）</td></tr>
+    <tr><td><code>get_intraday_snapshot</code></td><td><code>regularMarketPrice</code>, <code>previousClose</code></td><td>盘中狙击：即时跌幅、即时 PEG、5 年最低 P/E</td></tr>
+  </tbody>
+</table>
+
+<p class="muted">反爬：优先 <code>curl_cffi</code> 浏览器指纹；<code>.info</code> 失败退避重试 3 次。</p>
+
+<h3>3.3 成分股宇宙 (universe)</h3>
+<ul>
+  <li><code>us</code>：SEC <code>company_tickers.json</code>，纯字母代码；超样本量时随机无放回抽样（默认 500）。</li>
+  <li><code>sp500</code> / <code>nasdaq100</code>：维基百科 HTML 表。</li>
+  <li><code>jpx</code>：东证 Excel 全量（约 4000 只）。</li>
+  <li>去重 + <code>correct_ticker</code> 纠错后截断至 <code>MAX_UNIVERSE_SCAN</code>（默认 1200）。</li>
+</ul>
+
+<h3>3.4 多维时间轴 (temporal) — 防时空错乱</h3>
+
+<table>
+  <thead>
+    <tr><th>report_mode</th><th>额外数据</th><th>估值规则</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>daily</code> / <code>weekly</code></td><td>spot 价 + 可选 5 年 P/E 区间</td><td>TTM P/E + 即时价算 PEG</td></tr>
+    <tr><td><code>monthly</code></td><td>约 1 个月前收盘价 → 反推 P/E、PEG；RSI、20 日涨跌</td><td>对比估值扩张/收缩</td></tr>
+    <tr><td><code>quarterly</code></td><td><code>quarterly_income_stmt</code> + <code>quarterly_balance_sheet</code>；QoQ / 单季 YoY</td><td>财报截止日后 3 交易日均收为<strong>锚定价</strong>；PEG 用锚定 P/E</td></tr>
+    <tr><td><code>annual</code></td><td>5–10 年营收/利润/回购/股息；5 年最低/平均 P/E</td><td>年终清仓 + 历史低估水位</td></tr>
+  </tbody>
+</table>
+
+<p><code>Fundamentals</code> 扩展字段：<code>spot_price</code>, <code>valuation_anchor_*</code>, <code>price_1mo_ago</code>, <code>pe_5y_min/avg</code> 等，经 <code>granularity_block</code> 置顶注入 LLM。</p>
+
+<h2>4. 量化参数需求 (metrics.py)</h2>
+
+<h3>4.1 股息修正 PEG</h3>
+<pre>PEG = trailing_P/E ÷ (长期CAGR% + 股息率%)
+长期 CAGR：优先多年摊薄 EPS CAGR，其次净利润 CAGR；拒绝单季度 earningsGrowth
+增速 &gt; 50% 时分母封顶 35%
+季报/年报硬指标：若存在 valuation_pe，则用锚定 P/E 替代 trailing_pe 算 PEG</pre>
+
+<h3>4.2 排雷指标 (Metric)</h3>
+<table>
+  <thead><tr><th>key</th><th>规则</th><th>豁免</th></tr></thead>
+  <tbody>
+    <tr><td>peg</td><td>≤0.5 极佳；≤1 合理；&gt;2 高估</td><td>周期股高 PEG 黄色警告</td></tr>
+    <tr><td>debt</td><td>长期负债/权益 ≤33% 绿</td><td>金融股完全豁免</td></tr>
+    <tr><td>inventory</td><td>存货 YoY − 销售 YoY</td><td>科技/轻资产(&lt;5% 总资产)豁免</td></tr>
+    <tr><td>net_cash</td><td>每股净现金 / 股价</td><td>—</td></tr>
+    <tr><td>fcf</td><td>自由现金流正负 + FCF/市值</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h3>4.3 SBI / NISA 可交易</h3>
+<ul>
+  <li>日股 <code>.T</code>：可交易。</li>
+  <li>美股：纽交所/纳斯达克主板 + 市值 ≥ 3 亿美元；排除 OTC、5 位 F/Y 结尾 ADR。</li>
+</ul>
+
+<h3>4.4 公司类型初判 (classify_company)</h3>
+<p>隐蔽资产型 / 困境反转型 / 周期型 / 快速增长型 / 缓慢增长型 / 稳定增长型 — 供 LLM Step 1 复核。</p>
+
+<h2>5. 双层漏斗需求 (funnel.py)</h2>
+
+<h3>5.1 第一层（纯代码，无 Gemini）</h3>
+<ul>
+  <li>并发 <code>SCAN_WORKERS</code>（默认 8）调用 <code>get_quick_screen</code>。</li>
+  <li>通过条件（其一且负债不超标）：<code>quick_peg ≤ 1.5</code> 或 <code>net_cash_ratio ≥ 0.30</code>。</li>
+  <li>负债刷掉：<code>debt_ratio &gt; 0.50</code>。</li>
+</ul>
+
+<h3>5.2 第二层（AI 成本熔断）</h3>
+<ul>
+  <li><code>watchlist.yaml</code> 标的标记 <code>is_priority=True</code>，永远进 AI 组且优先。</li>
+  <li>其余幸存者按 <code>AI_SORT_KEY</code>（peg 升序 / net_cash 降序）排序，取前 <code>MAX_AI_ANALYSIS_COUNT</code>（默认 30）。</li>
+  <li>超额部分仅硬指标，不调 Gemini。</li>
+</ul>
+
+<h3>5.3 衍生筛选块</h3>
+<ul>
+  <li><code>fatal_warnings</code>：存货暴增、负债超标、盈利暴跌（周期股部分豁免）→ 邮件置顶红灯。</li>
+  <li><code>is_quality_pick</code>：无红灯 + PEG≤1 + 低负债 + 正 FCF → 优质股推荐（最多 20 只）。</li>
+  <li><code>cyclical_watch</code>：周期股底部观察理由。</li>
+  <li><code>check_daily_sniper_trigger</code>：SBI + 单日跌 &gt;5% + PEG&lt;0.5（日报全市场 SBI 池）。</li>
+</ul>
+
+<h2>6. AI 编排需求 (agent.py + llm.py)</h2>
+
+<h3>6.1 analyze_company 流程</h3>
+<ol>
+  <li><code>provider.get_fundamentals(ticker, mode=report_mode)</code></li>
+  <li><code>compute_metrics(f)</code> → 硬指标</li>
+  <li><code>build_data_block(f, m)</code>：颗粒度区块置顶 + 财务序列 + 排雷结果</li>
+  <li>若 <code>data_only=False</code>：注入 <code>mode_context</code>、<code>story_diff_context</code>、RAG 片段</li>
+  <li><code>llm.generate(system_prompt, user_content)</code> → 四步分析 + 【行动指令】</li>
+  <li>返回 <code>LynchAnalysis</code>（含 narrative）</li>
+</ol>
+
+<h3>6.2 Gemini 配置</h3>
+<ul>
+  <li><code>GEMINI_API_KEY</code> 必填（AI 模式）；模型默认 <code>gemini-2.5-flash</code>，可 <code>GEMINI_MODEL</code> 覆盖。</li>
+  <li><code>MODE_CONTEXT</code>：weekly / monthly / quarterly / annual 各有专项 Prompt（见 <code>llm.py</code>）。</li>
+  <li>狙击演练：<code>SNIPER_DRILL_MAX_TOKENS=2048</code>。</li>
+</ul>
+
+<h3>6.3 信号解析 (signals.py)</h3>
+<ul>
+  <li>取 narrative <strong>最后一条</strong>【行动指令】行。</li>
+  <li>优先级：🟢 强买(0) → 🟡 观察(1) → ⚪ 持有(2) → 🔴 卖出(3)。</li>
+  <li><strong>禁止</strong> Python 二次篡改 AI 裁决（无 valuation veto）。</li>
+</ul>
+
+<h3>6.4 故事线存档 (history.py)</h3>
+<ul>
+  <li>每次分析后追加 <code>data/history/YYYY-MM-DD.jsonl</code>：ticker、裁决、PEG、负债、存货差。</li>
+  <li>AI 模式分析前 <code>load_previous(ticker)</code> → <code>build_story_diff_context</code> 强制 Step 1 前一句话：好转/持平/恶化。</li>
+</ul>
+
+<h2>7. 报告周期 (report_modes)</h2>
+
+<table>
+  <thead>
+    <tr><th>Mode</th><th>定时 (JST 约)</th><th>AI</th><th>邮件主题前缀</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><span class="tag tag-daily">daily</span></td><td>周二~周六 06:00</td><td>否（+ 狙击例外）</td><td>【彼得林奇自选股监控】日报</td></tr>
+    <tr><td><span class="tag tag-ai">weekly</span></td><td>周六 12:00</td><td>是</td><td>【彼得林奇深度分析】周报</td></tr>
+    <tr><td><span class="tag tag-ai">monthly</span></td><td>月末最后工作日</td><td>是</td><td>【彼得林奇月度会诊】月报</td></tr>
+    <tr><td><span class="tag tag-ai">quarterly</span></td><td>1/4/7/10 月末</td><td>是</td><td>【彼得林奇财报季会诊】季报</td></tr>
+    <tr><td><span class="tag tag-ai">annual</span></td><td>12/31</td><td>是</td><td>【彼得林奇年终审视】年报</td></tr>
+  </tbody>
+</table>
+
+<p class="muted">月报 cron 命中后脚本内 <code>is_last_trading_day_of_month()</code> 门禁；可用 <code>--force</code> 跳过。</p>
+
+<h2>8. 狙击雷达需求</h2>
+
+<h3>8.1 收盘后日报狙击</h3>
+<ul>
+  <li>触发：<code>daily</code> + <code>scope=full</code> 幸存池中 <code>sbi_tradable</code> + 日 K 跌幅 &gt;5% + PEG&lt;0.5。</li>
+  <li>流程：<code>run_sniper_alert</code> → Gemini 两分钟演练 → 仅 🟢 强买 → <code>send_sniper_alert</code>。</li>
+  <li>标题：【🚨林奇狙击警报】{代码} 现价已杀入绝佳特价期！</li>
+</ul>
+
+<h3>8.2 盘中实时狙击</h3>
+<ul>
+  <li>Workflow：<code>.github/workflows/sniper_realtime.yml</code>，UTC 周二~周六 14:00–19:30 每 30 分钟。</li>
+  <li>脚本：<code>run_realtime_sniper.py</code>，仅 <code>watchlist.yaml</code> 且 SBI 可交易。</li>
+  <li>跌幅：<code>(regularMarketPrice / previousClose) - 1 ≤ -5%</code>；PEG：即时估算 &lt; 0.5。</li>
+  <li>附：5 年历史最低隐含 P/E。</li>
+  <li>防刷：<code>data/sniper_cache/YYYY-MM-DD.json</code>，同股同日最多 1 封。</li>
+  <li>标题：【🚨林奇深夜特快】{代码} - {简称} 盘中突发暴跌 [{跌幅}]！速去 SBI 账户护航！</li>
+</ul>
+
+<h2>9. 简报组装与发送 (notify.py + run_scheduled_analysis)</h2>
+
+<h3>9.1 邮件结构（自上而下）</h3>
+<ol>
+  <li>页眉：模式标题、JST 时间、分析只数（AI / 硬指标）、漏斗统计。</li>
+  <li>置顶摘要块（blockquote 卡片样式）：
+    <ul>
+      <li>🟢 推荐深挖优质股（PEG 升序，≤20）</li>
+      <li>🔴 致命红灯排雷</li>
+      <li>🧠 智能体最终裁决看板（双轨：SBI 免税直通车 / 硬核场外；强买按 PEG+FCF 排序）</li>
+      <li>🌀 周期股低谷观察</li>
+    </ul>
+  </li>
+  <li>详情区双轨：
+    <ul>
+      <li>第一章：🏦 主板免税成分股会诊详情（<code>sbi_tradable=True</code>）</li>
+      <li>第二章：🌀 硬核场外深挖（<code>sbi_tradable=False</code>，AI 模式）</li>
+    </ul>
+  </li>
+</ol>
+
+<h3>9.2 邮件主题动态标签</h3>
+<p>可选追加：🏦N只SBI强买 · 🧠N只强买 · 🟢N只优质 · 🔴N只排雷 · 🌀N只周期</p>
+
+<h3>9.3 SMTP 需求</h3>
+<table>
+  <thead><tr><th>变量</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>SMTP_SERVER / SMTP_PORT</td><td>如 smtp.gmail.com : 587</td></tr>
+    <tr><td>SMTP_USERNAME / SMTP_PASSWORD</td><td>应用专用密码</td></tr>
+    <tr><td>RECEIVER_EMAIL</td><td>收件人，逗号分隔</td></tr>
+  </tbody>
+</table>
+<p>双格式：纯文本 + HTML（Markdown 转 HTML，blockquote 卡片 CSS）。未配置时优雅降级，不崩溃。</p>
+
+<h3>9.4 主循环伪代码</h3>
+<pre>for q in working_set:
+    story_ctx = load_previous + build_story_diff_context  # AI 模式
+    a = analyze_company(..., report_mode=args.mode, data_only=not use_ai)
+    append_record(...)  # 历史存档
+    fatal_warnings / is_quality_pick / cyclical_watch
+    if ai_mode and use_ai: extract_signal → verdicts + 详情
+    elif daily: 日K跌幅 + run_sniper_alert  # 全市场 SBI
+
+sort entries → build top_block → build_briefing → send_email(subject, briefing)</pre>
+
+<h2>10. 调度与入口</h2>
+
+<table>
+  <thead><tr><th>入口</th><th>命令</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>定时简报</td><td><code>python scripts/run_scheduled_analysis.py --mode weekly --scope full</code></td><td>GitHub <code>run_analysis.yml</code></td></tr>
+    <tr><td>盘中狙击</td><td><code>python scripts/run_realtime_sniper.py</code></td><td>GitHub <code>sniper_realtime.yml</code></td></tr>
+    <tr><td>CLI 闪击</td><td><code>python lynch_cli.py --ticker AMD --mode quarterly</code></td><td>本地终端四步会诊</td></tr>
+    <tr><td>单股脚本</td><td><code>python scripts/analyze.py AMD</code></td><td>简化版 analyze</td></tr>
+  </tbody>
+</table>
+
+<h2>11. 环境变量清单</h2>
+
+<table>
+  <thead><tr><th>变量</th><th>默认</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td>DATA_PROVIDER</td><td>yahoo</td><td>数据源</td></tr>
+    <tr><td>UNIVERSE_SOURCES</td><td>us</td><td>成分股来源，逗号分隔</td></tr>
+    <tr><td>US_MARKET_SAMPLE_SIZE</td><td>500</td><td>全美股抽样数</td></tr>
+    <tr><td>MAX_UNIVERSE_SCAN</td><td>1200</td><td>海选池上限</td></tr>
+    <tr><td>MAX_AI_ANALYSIS_COUNT</td><td>30</td><td>单次 Gemini 上限</td></tr>
+    <tr><td>AI_SORT_KEY</td><td>peg</td><td>peg / net_cash</td></tr>
+    <tr><td>FUNNEL_MAX_PEG</td><td>1.5</td><td>第一层漏斗 PEG 上限</td></tr>
+    <tr><td>FUNNEL_MIN_NETCASH_RATIO</td><td>0.30</td><td>隐蔽资产阈值</td></tr>
+    <tr><td>FUNNEL_MAX_DEBT_RATIO</td><td>0.50</td><td>负债刷掉线</td></tr>
+    <tr><td>SCAN_WORKERS</td><td>8</td><td>粗筛并发</td></tr>
+    <tr><td>GEMINI_API_KEY</td><td>—</td><td>Gemini 密钥</td></tr>
+    <tr><td>GEMINI_MODEL</td><td>gemini-2.5-flash</td><td>模型名</td></tr>
+    <tr><td>SMTP_* / RECEIVER_EMAIL</td><td>—</td><td>邮件</td></tr>
+  </tbody>
+</table>
+
+<h2>12. 本地数据目录（gitignore）</h2>
+<ul>
+  <li><code>data/history/*.jsonl</code> — 故事线存档</li>
+  <li><code>data/sniper_cache/*.json</code> — 盘中防刷</li>
+  <li><code>books/lynch_book.rag.json</code> — RAG 向量索引</li>
+</ul>
+
+<h2>13. 非功能性需求</h2>
+<ul>
+  <li><strong>容错</strong>：单股失败不中断流水线；FundamentalsError / LLMError 捕获后渲染错误块。</li>
+  <li><strong>成本</strong>：daily 默认零 Gemini；AI 硬上限；狙击仅命中才调 Flash。</li>
+  <li><strong>限流</strong>：Yahoo 重试 + 抽样 + 并发上限；GitHub Actions timeout 30min（狙击 15min）。</li>
+  <li><strong>时区</strong>：简报时间戳统一 Asia/Tokyo (JST)。</li>
+  <li><strong>信任模型</strong>：AI 【行动指令】为最终裁决来源；Python 不做 downgrade veto。</li>
+</ul>
+
+<h2>14. 必看列表 (watchlist.yaml)</h2>
+<p>结构：<code>stocks[].ticker / name / market / tier / note</code>。在 <code>scope=watchlist</code> 或全市场漏斗中均标记 <code>is_priority</code>，保证必看 + 优先 AI。</p>
+
+<hr>
+<p class="muted">本文档由代码库逆向整理，随实现演进需同步更新。生成路径：<code>docs/lynch-requirements.html</code></p>
+
+</body>
+</html>

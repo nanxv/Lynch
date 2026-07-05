@@ -288,12 +288,16 @@ def main() -> int:
                         default="daily")
     parser.add_argument("--scope", choices=["watchlist", "full"], default="watchlist",
                         help="watchlist=仅必看列表 / full=全市场双层漏斗")
-    parser.add_argument("--market", default="ALL", help="ALL / JP / US")
+    parser.add_argument("--market", default=None,
+                        help="ALL / JP / US（默认读 MARKET 环境变量，未设则为 US）")
     parser.add_argument("--tickers", nargs="*", help="手动指定代码，覆盖清单")
     parser.add_argument("--max-universe", type=int, default=None, help="海选池上限（覆盖 MAX_UNIVERSE_SCAN）")
     parser.add_argument("--no-email", action="store_true", help="不发邮件（仅打印）")
     parser.add_argument("--force", action="store_true", help="跳过月报「月末交易日」门禁（调试用）")
     args = parser.parse_args()
+
+    if args.market is None:
+        args.market = config.DEFAULT_MARKET
 
     args.mode = normalize_mode(args.mode)
     if args.mode == "monthly" and not args.force and not is_last_trading_day_of_month():

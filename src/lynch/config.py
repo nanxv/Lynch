@@ -66,6 +66,12 @@ MAX_AI_ANALYSIS_COUNT = _env_int("MAX_AI_ANALYSIS_COUNT", 30)
 # 超额时的排序口径：peg(从低到高，最划算) / net_cash(从高到低，安全垫最厚)
 AI_SORT_KEY = _env_str("AI_SORT_KEY", "peg").lower()
 
+# ── 默认市场重心（USD 资产为主；可通过 MARKET 环境变量覆盖）────────
+# ALL = 美日混合 | US = 仅美股（SEC 抽样 + 非 .T 代码）| JP = 仅日股
+DEFAULT_MARKET = _env_str("MARKET", "US").upper()
+if DEFAULT_MARKET not in ("ALL", "US", "JP"):
+    DEFAULT_MARKET = "US"
+
 
 def correct_ticker(ticker: str) -> str:
     """应用硬编码纠错映射（大小写/后缀不敏感的精确匹配）。"""

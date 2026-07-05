@@ -31,19 +31,25 @@ from src.lynch.sniper import run_realtime_sniper_alert  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description="林奇盘中实时狙击（watchlist · SBI 可交易）")
     parser.add_argument("--no-email", action="store_true", help="不发邮件，仅打印")
+    parser.add_argument("--market", default=None, choices=["ALL", "US", "JP"],
+                        help="只扫指定市场自选股（默认 US）")
     args = parser.parse_args()
+
+    from src.lynch import config as lynch_config  # noqa: E402
+
+    market = (args.market or lynch_config.DEFAULT_MARKET).upper()
 
     if not llm.is_configured():
         print("⚠️  未配置 GEMINI_API_KEY，盘中狙击跳过 AI 确认。")
         return 0
 
     provider = get_provider()
-    stocks = load_config().stocks
+    stocks = [s for s in load_config().stocks if market == "ALL" or s.market.upper() == market]
     if not stocks:
-        print("⚠️  watchlist 为空。")
+        print(f"⚠️  watchlist 中没有 market={market} 的标的。")
         return 0
 
-    print(f"📡 盘中狙击扫描 · {len(stocks)} 只自选股 · 数据源={provider.name}\n")
+    print(f"📡 盘中狙击扫描 · {len(stocks)} 只自选股 (market={market}) · 数据源={provider.name}\n")
     sent = 0
     scanned = 0
     for s in stocks:

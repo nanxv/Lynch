@@ -29,7 +29,7 @@ on:
       market:
         description: "市场 (ALL / JP / US)"
         required: false
-        default: "ALL"
+        default: "US"
 
 jobs:
   analyze:
@@ -83,4 +83,4 @@ jobs:
           python scripts/run_scheduled_analysis.py \
             --mode "${{ steps.mode.outputs.value }}" \
             --scope "${{ github.event.inputs.scope || 'full' }}" \
-            --market "${{ github.event.inputs.market || 'ALL' }}"
+            --market "${{ github.event.inputs.market || vars.MARKET || 'US' }}"
