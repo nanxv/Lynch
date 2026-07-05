@@ -76,6 +76,10 @@ from src.lynch.report_modes import (  # noqa: E402
     is_last_trading_day_of_month,
     normalize_mode,
 )
+from src.lynch.market_calendar import (  # noqa: E402
+    expected_daily_session_date,
+    should_run_daily_report,
+)
 from src.lynch.universe import get_universe  # noqa: E402
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
@@ -259,12 +263,16 @@ def build_briefing(
     *,
     ai_mode: bool = False,
     flat_sections: list[str] | None = None,
+    us_session_date: str | None = None,
 ) -> str:
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M JST")
     title = MODE_TITLES.get(mode, "自选股监控日报")
     funnel = ""
     if stats.get("universe"):
         funnel = f"｜ 漏斗 {stats['universe']}→{stats['survivors']}只"
+    session_line = ""
+    if mode == "daily" and us_session_date:
+        session_line = f"> 数据对齐：美东 **{us_session_date}** 收盘（NYSE 常规时段；休市日自动停报）"
     header = [
         f"# 🎩 彼得·林奇 {title}",
         "",
@@ -272,10 +280,10 @@ def build_briefing(
         f"（AI {counts['ai']} / 仅硬指标 {counts['data_only']}）{funnel}",
         "",
         "> 数据来源：Yahoo Finance ｜ 铁律：数据为王，不预测宏观，长线持有。",
-        "",
-        "---",
-        "",
     ]
+    if session_line:
+        header.append(session_line)
+    header.extend(["", "---", ""])
     detail = notify.render_dual_track_detail_sections(
         main_sections, hardcore_sections, ai_mode=ai_mode, flat_sections=flat_sections,
     )
@@ -300,6 +308,11 @@ def main() -> int:
         args.market = config.DEFAULT_MARKET
 
     args.mode = normalize_mode(args.mode)
+    if args.mode == "daily" and not args.force:
+        ok, info = should_run_daily_report()
+        if not ok:
+            print(f"ℹ️  日报跳过：{info}（可用 --force 强制执行）")
+            return 0
     if args.mode == "monthly" and not args.force and not is_last_trading_day_of_month():
         print("ℹ️  今日非当月最后交易日，月报跳过（可用 --force 强制执行）。")
         return 0
@@ -467,9 +480,10 @@ def main() -> int:
         + _verdict_dashboard(verdicts, ai_count=counts["ai"], ai_mode=ai_mode)
         + _cyclical_block(cycs)
     )
+    us_session = expected_daily_session_date().isoformat() if args.mode == "daily" else None
     briefing = build_briefing(
         args.mode, date_str, top_block, main_sections, hardcore_sections, stats, counts,
-        ai_mode=ai_mode, flat_sections=flat_sections,
+        ai_mode=ai_mode, flat_sections=flat_sections, us_session_date=us_session,
     )
 
     print("\n" + "=" * 60)

@@ -123,7 +123,7 @@
     <tr><td><span class="tag tag-sniper">盘中狙击</span></td><td><code>0,30 14-19 * * 2-6</code></td><td>23:00～次日 04:30 每 30 分</td><td>—</td><td>命中时</td></tr>
   </tbody>
 </table>
-<p class="muted">*日报默认不调 Gemini；命中狙击条件时例外调用 Flash 发加急信。月报 cron 触发后脚本内 <code>is_last_trading_day_of_month()</code> 校验，非月末工作日则跳过（可用 <code>--force</code>）。</p>
+<p class="muted">*日报默认不调 Gemini；命中狙击条件时例外调用 Flash 发加急信。月报 cron 触发后脚本内 <code>is_last_trading_day_of_month()</code> 校验，非月末工作日则跳过（可用 <code>--force</code>）。<strong>日报</strong>在 cron 触发后还会校验当日美东 session 是否为 NYSE 实际成交日（SPY 日 K）；法定节假日/休市则跳过，避免发出「尸检式」空报。</p>
 
 <h3>2.3 为什么日报是 JST「周二～周六」而非「周一～周五」？</h3>
 <p>日报对齐的是<strong>美股每个交易日收盘后</strong>，不是日本工作日历。</p>
@@ -139,7 +139,17 @@
 </table>
 <p class="muted">若强行改为 JST 周一至周五发报，会漏掉周五美股收盘报，并在周一早上发出无新交易日的空报。</p>
 
-<h3>2.4 定时任务运维要求</h3>
+<h3>2.4 美股休市门禁（日报专用）</h3>
+<p>Cron 按 UTC 周一～周五触发，但<strong>不等于</strong>美股每个自然日都开盘。脚本 <code>should_run_daily_report()</code>（<code>src/lynch/market_calendar.py</code>）在 <code>--mode daily</code> 时执行：</p>
+<ul>
+  <li>以 cron 触发时刻映射到<strong>美东日历日</strong>，作为应对齐的 session；</li>
+  <li>用 SPY 日 K 索引判断该日是否实际成交（覆盖 NYSE 法定节假日、暂停交易；早收日仍视为成交日）；</li>
+  <li>休市则打印 <code>日报跳过：美股休市（美东 YYYY-MM-DD …）</code> 并<strong>不发邮件</strong>；</li>
+  <li>正常交易日简报页眉标注「数据对齐：美东 YYYY-MM-DD 收盘」。</li>
+</ul>
+<p class="muted">调试可 <code>--force</code> 绕过门禁。SPY 日历拉取失败时保守放行（仅排除周末），避免 Actions 偶发网络问题导致长期停报。</p>
+
+<h3>2.5 定时任务运维要求</h3>
 <div class="warn">
   <strong>手动 Run workflow ≠ 自动定时。</strong>Actions 历史若全部为 <code>Manually run by …</code>，说明 cron 从未触发，不会自动收信。<br><br>
   启用步骤：Actions → 对应 Workflow → 若顶部有 <strong>Enable scheduled workflows</strong> 须点击启用；
@@ -163,7 +173,7 @@
     <tr><td>信号</td><td>【行动指令】解析、PEG/FCF 排序</td><td><code>src/lynch/signals.py</code></td></tr>
     <tr><td>狙击</td><td>收盘后 + 盘中实时</td><td><code>src/lynch/sniper.py</code>, <code>sniper_cache.py</code></td></tr>
     <tr><td>邮件</td><td>双轨看板、Markdown→HTML</td><td><code>src/lynch/notify.py</code></td></tr>
-    <tr><td>报告模式</td><td>五种 mode 常量与月末门禁</td><td><code>src/lynch/report_modes.py</code></td></tr>
+    <tr><td>报告模式</td><td>五种 mode 常量与月末/休市门禁</td><td><code>src/lynch/report_modes.py</code>, <code>market_calendar.py</code></td></tr>
     <tr><td>主调度</td><td>简报流水线</td><td><code>scripts/run_scheduled_analysis.py</code></td></tr>
     <tr><td>盘中调度</td><td>watchlist US 扫描</td><td><code>scripts/run_realtime_sniper.py</code></td></tr>
     <tr><td>CLI</td><td>单股闪击</td><td><code>lynch_cli.py</code></td></tr>
