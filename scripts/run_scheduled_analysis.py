@@ -39,6 +39,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
+from src.config_loader import load_config  # noqa: E402
 from src.lynch import analyze_company, config, get_provider, llm, notify  # noqa: E402
 from src.lynch.agent import LynchAnalysis  # noqa: E402
 from src.lynch.config import correct_ticker  # noqa: E402
@@ -80,7 +81,6 @@ from src.lynch.market_calendar import (  # noqa: E402
     should_run_daily_report,
 )
 from src.lynch.universe import get_universe  # noqa: E402
-from src.lynch.watchlist import load_watchlist_stocks  # noqa: E402
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 
@@ -92,7 +92,7 @@ _SIGNAL_UNKNOWN_ORDER = SIGNAL_UNKNOWN
 def _watchlist(market: str) -> dict[str, tuple[str, str, str]]:
     """返回 {纠错后ticker: (name, note, user_status)}（必看列表）。"""
     out: dict[str, tuple[str, str, str]] = {}
-    for s in load_watchlist_stocks():
+    for s in load_config().stocks:
         if market != "ALL" and s.market.upper() != market:
             continue
         out[correct_ticker(s.ticker)] = (s.name, s.note, s.user_status)
@@ -115,7 +115,8 @@ def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tup
     if args.tickers:
         watch = {correct_ticker(t): (t, "", "watch") for t in args.tickers}
     else:
-        watch = _watchlist(market)
+        # 影子持仓：watchlist.yaml 全部纳入，不受 MARKET 过滤（MARKET 仅约束全市场漏斗）
+        watch = _watchlist("ALL")
 
     if args.scope == "watchlist" or args.tickers:
         qs = [QuickScreen(ticker=t, name=n, is_priority=True) for t, (n, _, _) in watch.items()]

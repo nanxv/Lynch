@@ -1,31 +1,30 @@
-# 日股影子持仓 — NISA 成长枠（与乐天/SBI 账户手动同步，系统不自动拉券商）
-# status: held=已持有底仓 / watch=观望
-# 投信（eMAXIS 全世界/标普、SMT 黄金）不在此清单 — Lynch 仅分析个股
+# 日股备用 / 与 watchlist.yaml 中日股条目保持同步
+# 主清单已合并至 watchlist.yaml；本文件供手动 --tickers 或历史参考
 stocks:
   - ticker: "285A.T"
     name: "キオクシアHD"
     market: JP
     tier: 1
     status: held
-    note: "NISA成长枠 · 3株 · 取得约40,368円"
+    note: "NISA 3株"
 
   - ticker: "4063.T"
     name: "信越化学"
     market: JP
     tier: 1
     status: held
-    note: "NISA成长枠 · 3株 · 取得约7,050円"
+    note: "NISA 3株"
 
   - ticker: "5803.T"
     name: "フジクラ"
     market: JP
     tier: 2
     status: held
-    note: "NISA成长枠 · 1株 · 取得约5,321円"
+    note: "NISA 1株"
 
   - ticker: "6315.T"
     name: "TOWA"
     market: JP
     tier: 2
     status: watch
-    note: "未持仓 · 备用观察"
+    note: "未持有 · 观察"
