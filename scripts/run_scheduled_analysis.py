@@ -39,7 +39,6 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-from src.config_loader import load_config  # noqa: E402
 from src.lynch import analyze_company, config, get_provider, llm, notify  # noqa: E402
 from src.lynch.agent import LynchAnalysis  # noqa: E402
 from src.lynch.config import correct_ticker  # noqa: E402
