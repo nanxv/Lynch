@@ -65,7 +65,7 @@ def main() -> int:
             continue
         try:
             if run_realtime_sniper_alert(
-                ticker, provider=provider, send=not args.no_email,
+                ticker, provider=provider, user_status=s.user_status, send=not args.no_email,
             ):
                 sent += 1
         except Exception as exc:  # noqa: BLE001

@@ -9,6 +9,7 @@ from .data import Fundamentals, get_provider
 from .data.base import BaseDataProvider
 from .metrics import LynchMetrics, compute_metrics
 from .prompt import SYSTEM_PROMPT
+from .watchlist import normalize_user_status
 
 
 def _system_prompt() -> str:
@@ -125,14 +126,14 @@ def analyze_company(
     data_only: bool = False,
     model: str | None = None,
     provider: BaseDataProvider | None = None,
-    mode_context: str = "",
+    user_status: str = "watch",
     story_diff_context: str = "",
     report_mode: str = "weekly",
 ) -> LynchAnalysis:
     """完整分析一家公司。data_only=True 时跳过 LLM，仅返回硬指标数据区块。
 
-    report_mode: daily/weekly/monthly/quarterly/annual，决定底层数据颗粒度。
-    mode_context: 投研周期 Prompt 专项要求（默认由 llm.get_mode_context 提供）。
+    report_mode: daily/weekly/monthly/quarterly/annual，决定底层数据颗粒度与 Task Prompt。
+    user_status: 影子持仓状态 held / watch（来自 watchlist.yaml status 字段）。
     """
     prov = provider or get_provider()
     f = prov.get_fundamentals(ticker, mode=report_mode)
@@ -142,10 +143,9 @@ def analyze_company(
     narrative: str | None = None
     if not data_only:
         note = f"\n\n用户补充说明：{user_note}" if user_note.strip() else ""
-        ctx_text = mode_context.strip() or llm.get_mode_context(report_mode)
-        ctx = f"\n\n【本次分析时点专项要求】\n{ctx_text}" if ctx_text else ""
+        status = normalize_user_status(user_status)
+        task_content = llm.build_task_prompt(report_mode, status)
         story = f"\n\n{story_diff_context}" if story_diff_context.strip() else ""
-        # 本地 RAG：按公司类型/行业检索原著相关片段（无索引/无 key 时降级为空）
         ref = ""
         try:
             query = f"{m.company_type} {f.sector or ''} {f.industry or ''} {f.name or f.ticker} 如何估值与买卖决策"
@@ -155,9 +155,10 @@ def analyze_company(
         except Exception:  # noqa: BLE001
             ref = ""
         user_content = (
-            f"请按林奇 SOP 分析下面这家公司。\n\n{data_block}{note}{ctx}{story}{ref}\n\n"
-            "请严格引用上面的真实数字，输出四步分析 + 最终裁决，"
-            "并在最末尾给出唯一的【行动指令】（🟢强烈买入 / 🟡观察仓 / 🔴卖出避开 / ⚪钝感持有）。"
+            f"{task_content}\n\n"
+            f"请按系统设定四步结构分析下面这家公司。\n\n"
+            f"{data_block}{note}{story}{ref}\n\n"
+            "请严格引用上面的真实数字，并在最末尾单独一行给出唯一的【行动指令】。"
         )
         narrative = llm.generate(_system_prompt(), user_content, model=model)
 

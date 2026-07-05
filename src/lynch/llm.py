@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+from .prompt import TASK_PROMPTS
+from .watchlist import normalize_user_status
 
 class LLMError(Exception):
     """LLM 调用失败或未配置时抛出。"""
@@ -16,33 +18,17 @@ _FALLBACK_MODEL = "gemini-2.5-flash"
 DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip()
 SNIPER_DRILL_MAX_TOKENS = 2048  # 日间狙击「两分钟演练」专用上限
 
-# 各报告周期注入 Gemini 的专项上下文（须与数据颗粒度 mode 对齐）
-MODE_CONTEXT: dict[str, str] = {
-    "weekly": "",
-    "monthly": (
-        "现在是【月度动量会诊】时点（月末，无新财报）。\n"
-        "你必须优先使用「月度动量与估值漂移」与「多维时间轴」区块："
-        "约1个月前收盘价、一个月前 P/E 与 PEG、当前即时估值。\n"
-        "核心任务：对比历史与当前估值，判断这一个月内估值是扩张还是收缩；"
-        "当前月度回调是否砸出了新的击球区。禁止用年度财报臆造本月突变。"
-    ),
-    "quarterly": (
-        "现在是【财报季度会诊】时点（季度末）。\n"
-        "你必须优先使用「真实季度财报」与「财报锚定价」区块："
-        "QoQ/单季同比、财报发布后3日均收、锚定日 P/E vs 即时 P/E。\n"
-        "核心问题：自最新财报发布以来，股价走势是否已透支该份财报的利好？"
-        "禁止仅用即时现价评判旧利润（避免高位接盘幻觉）。"
-    ),
-    "annual": (
-        "现在是【年终持仓清理】时点。你必须优先使用「长期历史视野」与 5 年 P/E 水位线。\n"
-        "站在 3-5 年宏观视角审视类型是否退化；结合 5 年平均/最低 P/E 判断低估或透支。\n"
-        "对故事变坏或增长迁移的标的，必须在文末单独列出【清仓剔除名单】及理由。"
-    ),
-}
+
+def build_task_prompt(mode: str, user_status: str = "watch") -> str:
+    """按报告周期 + 影子持仓状态组装动态 Task Prompt。"""
+    task_key = mode if mode in TASK_PROMPTS else "weekly"
+    status = normalize_user_status(user_status)
+    return TASK_PROMPTS[task_key].format(user_status=status)
 
 
-def get_mode_context(mode: str) -> str:
-    return MODE_CONTEXT.get(mode, "")
+def get_mode_context(mode: str, user_status: str = "watch") -> str:
+    """兼容旧调用方：返回动态 Task Prompt 文本。"""
+    return build_task_prompt(mode, user_status)
 
 
 def is_configured() -> bool:

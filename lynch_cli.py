@@ -30,9 +30,10 @@ from src.lynch.history import (  # noqa: E402
     load_previous,
     record_from_analysis,
 )
-from src.lynch.llm import LLMError, get_mode_context  # noqa: E402
+from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.report_modes import normalize_mode  # noqa: E402
 from src.lynch.signals import extract_signal  # noqa: E402
+from src.lynch.watchlist import user_status_for_ticker  # noqa: E402
 
 
 def main() -> int:
@@ -65,7 +66,7 @@ def main() -> int:
             provider=provider,
             story_diff_context=story_ctx,
             report_mode=report_mode,
-            mode_context=get_mode_context(report_mode),
+            user_status=user_status_for_ticker(ticker),
         )
     except FundamentalsError as exc:
         print(f"❌ 数据获取失败：{exc}")

@@ -67,7 +67,7 @@ from src.lynch.signals import (  # noqa: E402
     extract_signal,
     fcf_yield,
 )
-from src.lynch.llm import LLMError, get_mode_context  # noqa: E402
+from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.report_modes import (  # noqa: E402
     AI_MODES,
     MODE_TITLES,
@@ -94,13 +94,13 @@ def _verdict_dashboard(verdicts: list[tuple], *, ai_count: int = 0, ai_mode: boo
 
 
 # ── 候选集构建 ─────────────────────────────────────────────────
-def _watchlist(market: str) -> dict[str, tuple[str, str]]:
-    """返回 {纠错后ticker: (name, note)}（必看列表）。"""
-    out: dict[str, tuple[str, str]] = {}
+def _watchlist(market: str) -> dict[str, tuple[str, str, str]]:
+    """返回 {纠错后ticker: (name, note, user_status)}（必看列表）。"""
+    out: dict[str, tuple[str, str, str]] = {}
     for s in load_config().stocks:
         if market != "ALL" and s.market.upper() != market:
             continue
-        out[correct_ticker(s.ticker)] = (s.name, s.note)
+        out[correct_ticker(s.ticker)] = (s.name, s.note, s.user_status)
     return out
 
 
@@ -118,12 +118,12 @@ def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tup
     stats = {"universe": 0, "survivors": 0}
 
     if args.tickers:
-        watch = {correct_ticker(t): (t, "") for t in args.tickers}
+        watch = {correct_ticker(t): (t, "", "watch") for t in args.tickers}
     else:
         watch = _watchlist(market)
 
     if args.scope == "watchlist" or args.tickers:
-        qs = [QuickScreen(ticker=t, name=n, is_priority=True) for t, (n, _) in watch.items()]
+        qs = [QuickScreen(ticker=t, name=n, is_priority=True) for t, (n, _, _) in watch.items()]
         return qs, watch, stats
 
     # ── 全市场海选 + 第一层漏斗 ──
@@ -306,7 +306,6 @@ def main() -> int:
 
     provider = get_provider()
     ai_mode = is_ai_mode(args.mode)
-    mode_context = get_mode_context(args.mode)
     ai_available = ai_mode and llm.is_configured()
     if ai_mode and not ai_available:
         print(f"⚠️  {args.mode} 模式但未检测到 GEMINI_API_KEY，本次全部降级为仅硬指标。\n")
@@ -333,8 +332,9 @@ def main() -> int:
     cycs: list[tuple[str, str, str]] = []
 
     for seq, q in enumerate(working):
-        name = watch.get(q.ticker, (q.name or q.ticker, ""))[0]
-        note = watch.get(q.ticker, ("", ""))[1]
+        name = watch.get(q.ticker, (q.name or q.ticker, "", "watch"))[0]
+        note = watch.get(q.ticker, ("", "", "watch"))[1]
+        user_status = watch.get(q.ticker, ("", "", "watch"))[2]
         use_ai = q.ticker in ai_tickers
         story_ctx = ""
         if use_ai and ai_mode:
@@ -344,7 +344,7 @@ def main() -> int:
         try:
             a = analyze_company(
                 q.ticker, user_note=note, data_only=not use_ai, provider=provider,
-                mode_context=mode_context if use_ai else "",
+                user_status=user_status,
                 story_diff_context=story_ctx,
                 report_mode=args.mode,
             )
@@ -415,6 +415,7 @@ def main() -> int:
                             q.ticker,
                             provider=provider,
                             day_change=day_change,
+                            user_status=user_status,
                             send=not args.no_email,
                         )
                     except Exception as exc:  # noqa: BLE001

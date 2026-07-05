@@ -67,8 +67,10 @@ class WatchlistRepository:
         with watchlist_path.open(encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         count = 0
+        from src.lynch.watchlist import parse_stock_entry
+
         for item in raw.get("stocks", []):
-            self.add_stock(StockEntry(**item))
+            self.add_stock(parse_stock_entry(item))
             count += 1
         return count
 
