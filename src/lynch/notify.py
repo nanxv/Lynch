@@ -77,6 +77,16 @@ _VERDICT_UNKNOWN_COLOR = "#566573"
 _HARDCORE_MAX_ORDER = 2  # 硬核区只展示 买入/观察/持有
 
 
+def format_ticker_with_category(
+    ticker: str,
+    name: str,
+    company_type: str | None,
+) -> str:
+    """机械榜单行首：`META Meta Platforms, Inc. [快速增长型]`"""
+    tag = f" [{company_type}]" if company_type else ""
+    return f"{ticker} {name}{tag}"
+
+
 def _render_verdict_groups(
     verdicts: list[tuple],
     *,
@@ -115,6 +125,89 @@ def _render_verdict_groups(
                 lines.append(f'> - <b style="color:{color}">{ticker}｜{name}</b>{tail}')
         lines.append(">")
     return lines
+
+
+def render_red_flag_block(reds: list[tuple]) -> str:
+    """置顶「🔴 致命红灯排雷」。reds: (ticker, name, reasons[, company_type])"""
+    if not reds:
+        return (
+            "> **🟢 全场无致命红灯** —— 本次扫描的标的暂未触发存货暴增/负债超标/增长暴跌。\n\n"
+            "---\n\n"
+        )
+    lines = [f"> ## 🔴🔴 致命红灯排雷（{len(reds)}只 · 置顶必看）", ">"]
+    for row in reds:
+        ticker, name, reasons = row[0], row[1], row[2]
+        company_type = row[3] if len(row) > 3 else None
+        label = format_ticker_with_category(ticker, name, company_type)
+        lines.append(
+            f'> - <b style="color:#c0392b">🔴 {label}</b>：**{"；".join(reasons)}**'
+        )
+    lines.append(">")
+    lines.append("> *即使是你原本看好的股票，一旦基本面故事变坏，也会第一时间出现在这里。*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_recommend_block(recs: list[tuple]) -> str:
+    """置顶「🟢 推荐深挖的优质股」。recs: (ticker, name, peg, reason[, company_type])"""
+    if not recs:
+        return (
+            "> ## 🟢 推荐深挖的优质股\n>\n"
+            "> 本次扫描暂无同时满足「PEG≤1 + 低负债 + 正现金流」的标的。宁可空仓，不追贵股。\n\n"
+            "---\n\n"
+        )
+    lines = [f"> ## 🟢🟢 推荐深挖的优质股（{len(recs)}只 · 估值划算优先）", ">"]
+    for row in recs:
+        ticker, name, _peg, reason = row[0], row[1], row[2], row[3]
+        company_type = row[4] if len(row) > 4 else None
+        label = format_ticker_with_category(ticker, name, company_type)
+        lines.append(f'> - <b style="color:#1e8449">🟢 {label}</b>：{reason}')
+    lines.append(">")
+    lines.append("> *这些是「故事好+数字便宜」的候选；买入前请做 2 分钟演练，用大白话讲清买入理由。*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
+    """「🌀 周期型公司 - 行业低谷观察期」板块。"""
+    if not cycs:
+        return ""
+    lines = [f"> ## 🌀 周期型公司 · 行业低谷观察期（{len(cycs)}只）", ">"]
+    for ticker, name, reason in cycs:
+        lines.append(f"> - <b style=\"color:#b9770e\">🌀 {ticker}｜{name}</b>：{reason}")
+    lines.append(">")
+    lines.append("> *周期股反向操作：利润最差、P/E最高时往往是底部；别在利润最漂亮时追。*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_briefing_summary(
+    *,
+    recs: list[tuple],
+    reds: list[tuple],
+    cycs: list[tuple[str, str, str]],
+    verdicts: list[tuple],
+    ai_count: int,
+    ai_mode: bool,
+) -> str:
+    """简报置顶区：AI 在场时隐藏机械雷达，直接展示裁决看板。"""
+    parts: list[str] = []
+    if ai_count == 0:
+        parts.append(render_recommend_block(recs))
+        parts.append(render_red_flag_block(reds))
+    parts.append(render_dual_track_verdict_dashboard(
+        verdicts,
+        ai_count=ai_count,
+        show_when_empty=ai_mode and ai_count > 0,
+    ))
+    parts.append(render_cyclical_block(cycs))
+    return "".join(parts)
 
 
 def render_dual_track_verdict_dashboard(

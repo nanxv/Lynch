@@ -88,15 +88,6 @@ _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 _SIGNAL_UNKNOWN_ORDER = SIGNAL_UNKNOWN
 
 
-def _verdict_dashboard(verdicts: list[tuple], *, ai_count: int = 0, ai_mode: bool = False) -> str:
-    """双轨 AI 裁决看板（委托 notify 模块渲染）。"""
-    return notify.render_dual_track_verdict_dashboard(
-        verdicts,
-        ai_count=ai_count,
-        show_when_empty=ai_mode,
-    )
-
-
 # ── 候选集构建 ─────────────────────────────────────────────────
 def _watchlist(market: str) -> dict[str, tuple[str, str, str]]:
     """返回 {纠错后ticker: (name, note, user_status)}（必看列表）。"""
@@ -200,56 +191,6 @@ def _render_weekly(a: LynchAnalysis, priority: bool, signal_label: str = "") -> 
 
 def _render_error(ticker: str, name: str, err: str) -> str:
     return f"## {ticker} — {name}\n\n> ❌ 分析失败：{err}\n\n---"
-
-
-def _red_flag_block(reds: list[tuple[str, str, list[str]]]) -> str:
-    """置顶「🔴 致命红灯排雷」高能预警板块（日报/周报通用）。"""
-    if not reds:
-        return "> **🟢 全场无致命红灯** —— 本次扫描的标的暂未触发存货暴增/负债超标/增长暴跌。\n\n---\n\n"
-    lines = [f"> ## 🔴🔴 致命红灯排雷（{len(reds)}只 · 置顶必看）", ">"]
-    for ticker, name, reasons in reds:
-        lines.append(
-            f"> - <b style=\"color:#c0392b\">🔴 {ticker}｜{name}</b>：**{ '；'.join(reasons) }**"
-        )
-    lines.append(">")
-    lines.append("> *即使是你原本看好的股票，一旦基本面故事变坏，也会第一时间出现在这里。*")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _recommend_block(recs: list[tuple[str, str, float | None, str]]) -> str:
-    """置顶「🟢 推荐深挖的优质股」板块（PEG 从低到高，估值最划算优先）。"""
-    if not recs:
-        return (
-            "> ## 🟢 推荐深挖的优质股\n>\n"
-            "> 本次扫描暂无同时满足「PEG≤1 + 低负债 + 正现金流」的标的。宁可空仓，不追贵股。\n\n---\n\n"
-        )
-    lines = [f"> ## 🟢🟢 推荐深挖的优质股（{len(recs)}只 · 估值划算优先）", ">"]
-    for ticker, name, _peg, reason in recs:
-        lines.append(f"> - <b style=\"color:#1e8449\">🟢 {ticker}｜{name}</b>：{reason}")
-    lines.append(">")
-    lines.append("> *这些是「故事好+数字便宜」的候选；买入前请做 2 分钟演练，用大白话讲清买入理由。*")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
-    """「🌀 周期型公司 - 行业低谷观察期」板块。豁免常规排雷的周期股单列于此。"""
-    if not cycs:
-        return ""
-    lines = [f"> ## 🌀 周期型公司 · 行业低谷观察期（{len(cycs)}只）", ">"]
-    for ticker, name, reason in cycs:
-        lines.append(f"> - <b style=\"color:#b9770e\">🌀 {ticker}｜{name}</b>：{reason}")
-    lines.append(">")
-    lines.append("> *周期股反向操作：利润最差、P/E最高时往往是底部；别在利润最漂亮时追。*")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    return "\n".join(lines)
 
 
 def build_briefing(
@@ -379,10 +320,10 @@ def main() -> int:
 
             fw = fatal_warnings(a.fundamentals, a.metrics)
             if fw:
-                reds.append((q.ticker, display_name, fw))
+                reds.append((q.ticker, display_name, fw, a.metrics.company_type))
             ok, reason = is_quality_pick(a.fundamentals, a.metrics, fw)
             if ok:
-                recs.append((q.ticker, display_name, a.metrics.peg, reason))
+                recs.append((q.ticker, display_name, a.metrics.peg, reason, a.metrics.company_type))
             if not fw:
                 cyc = cyclical_watch(a.fundamentals, a.metrics)
                 if cyc:
@@ -473,12 +414,13 @@ def main() -> int:
     if tags:
         subject += "（" + "·".join(tags) + "）"
 
-    # 顶部顺序：优质股 → 致命红灯 → 🧠AI裁决看板（结论先行）→ 周期观察
-    top_block = (
-        _recommend_block(recs)
-        + _red_flag_block(reds)
-        + _verdict_dashboard(verdicts, ai_count=counts["ai"], ai_mode=ai_mode)
-        + _cyclical_block(cycs)
+    top_block = notify.render_briefing_summary(
+        recs=recs,
+        reds=reds,
+        cycs=cycs,
+        verdicts=verdicts,
+        ai_count=counts["ai"],
+        ai_mode=ai_mode,
     )
     us_session = expected_daily_session_date().isoformat() if args.mode == "daily" else None
     briefing = build_briefing(
