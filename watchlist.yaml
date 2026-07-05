@@ -1,24 +1,24 @@
-# 必看列表 — 重心：美股（SBI/NISA 可直购的 USD 资产）
+# 必看列表 — 美股（SBI/NISA 可直购的 USD 资产）
 # status: held=已持有底仓 / watch=观望（默认 watch）
-# 日股标的已移至 watchlist-jp.yaml（按需手动 --tickers 纳入）
+# 日股影子持仓见 watchlist-jp.yaml
 stocks:
   - ticker: "AMD"
     name: "AMD"
     market: US
     tier: 1
-    status: held
-    note: "核心池 — 美股林奇会诊"
+    status: watch
+    note: "未持仓 · 核心观察池"
 
   - ticker: "NVDA"
     name: "NVIDIA"
     market: US
     tier: 2
-    status: held
-    note: "常规池 — 半导体动量"
+    status: watch
+    note: "未持仓 · 半导体动量观察"
 
   - ticker: "META"
     name: "Meta"
     market: US
     tier: 2
     status: watch
-    note: "常规池 — 平台型增长"
+    note: "未持仓 · 平台型增长观察"

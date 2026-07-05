@@ -1,16 +1,31 @@
-# 日股备用清单（默认流水线不再扫描；日元贬值周期下主动降配）
-# 手动纳入示例：
-#   python scripts/run_scheduled_analysis.py --mode weekly --scope watchlist \
-#     --tickers 4063.T 6315.T
+# 日股影子持仓 — NISA 成长枠（与乐天/SBI 账户手动同步，系统不自动拉券商）
+# status: held=已持有底仓 / watch=观望
+# 投信（eMAXIS 全世界/标普、SMT 黄金）不在此清单 — Lynch 仅分析个股
 stocks:
+  - ticker: "285A.T"
+    name: "キオクシアHD"
+    market: JP
+    tier: 1
+    status: held
+    note: "NISA成长枠 · 3株 · 取得约40,368円"
+
   - ticker: "4063.T"
     name: "信越化学"
     market: JP
     tier: 1
-    note: "原核心池 — 已降配"
+    status: held
+    note: "NISA成长枠 · 3株 · 取得约7,050円"
+
+  - ticker: "5803.T"
+    name: "フジクラ"
+    market: JP
+    tier: 2
+    status: held
+    note: "NISA成长枠 · 1株 · 取得约5,321円"
 
   - ticker: "6315.T"
     name: "TOWA"
     market: JP
     tier: 2
-    note: "原常规池（6859.T 已纠错为 6315.T）"
+    status: watch
+    note: "未持仓 · 备用观察"

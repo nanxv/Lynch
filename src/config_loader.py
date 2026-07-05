@@ -63,11 +63,9 @@ def load_config(
         raw = yaml.safe_load(f)
 
     if stocks is None:
-        from src.lynch.watchlist import parse_stock_entry
+        from src.lynch.watchlist import load_watchlist_stocks
 
-        with watchlist_path.open(encoding="utf-8") as f:
-            watchlist = yaml.safe_load(f)
-        stocks = [parse_stock_entry(s) for s in watchlist["stocks"]]
+        stocks = load_watchlist_stocks()
 
     strategy = StrategyConfig(**raw["strategy"])
     markets = {k: MarketConfig(**v) for k, v in raw["markets"].items()}

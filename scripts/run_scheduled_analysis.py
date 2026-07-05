@@ -81,6 +81,7 @@ from src.lynch.market_calendar import (  # noqa: E402
     should_run_daily_report,
 )
 from src.lynch.universe import get_universe  # noqa: E402
+from src.lynch.watchlist import load_watchlist_stocks  # noqa: E402
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 
@@ -92,7 +93,7 @@ _SIGNAL_UNKNOWN_ORDER = SIGNAL_UNKNOWN
 def _watchlist(market: str) -> dict[str, tuple[str, str, str]]:
     """返回 {纠错后ticker: (name, note, user_status)}（必看列表）。"""
     out: dict[str, tuple[str, str, str]] = {}
-    for s in load_config().stocks:
+    for s in load_watchlist_stocks():
         if market != "ALL" and s.market.upper() != market:
             continue
         out[correct_ticker(s.ticker)] = (s.name, s.note, s.user_status)
