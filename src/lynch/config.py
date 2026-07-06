@@ -25,8 +25,9 @@ def _env_float(key: str, default: float) -> float:
 
 
 # ── 数据供应层 ──────────────────────────────────────────────────
-# 选择数据源：yahoo(默认) / fmp / jquants（后两者为未来扩展预留接口）
+# 选择数据源：yahoo / fmp(默认升级目标) / jquants
 DATA_PROVIDER = _env_str("DATA_PROVIDER", "yahoo").lower()
+FMP_API_KEY = _env_str("FMP_API_KEY", "")
 
 # ── 硬编码数据纠错 ─────────────────────────────────────────────
 # 6859.T 实际是 Espec Corp，真正的 TOWA 是 6315.T。

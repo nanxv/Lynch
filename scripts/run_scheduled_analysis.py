@@ -169,8 +169,9 @@ def _render_daily(a: LynchAnalysis, change_5d: float | None, priority: bool) -> 
     peg = "N/A" if a.metrics.peg is None else f"{a.metrics.peg:.2f}"
     chg = "N/A" if change_5d is None else f"{change_5d * 100:+.1f}%"
     star = "⭐ " if priority else ""
+    whale = f"\n\n> {f.whale_alert_brief}" if f.whale_alert_brief else ""
     return (
-        f"### {star}{a.ticker} — {f.name or a.ticker}\n\n"
+        f"### {star}{a.ticker} — {f.name or a.ticker}{whale}\n\n"
         f"现价 **{price}** ｜ 5日 {chg} ｜ 市盈率 {pe} ｜ PEG {peg}\n\n"
         f"`{_flag_line(a)}`\n\n---"
     )
@@ -179,7 +180,9 @@ def _render_daily(a: LynchAnalysis, change_5d: float | None, priority: bool) -> 
 def _render_weekly(a: LynchAnalysis, priority: bool, signal_label: str = "") -> str:
     star = "⭐ " if priority else ""
     tag = f"　｜　{signal_label}" if signal_label else ""
-    lines = [f"## {star}{a.ticker} — {a.fundamentals.name or a.ticker}{tag}", "", f"`{_flag_line(a)}`", ""]
+    f = a.fundamentals
+    whale = f"\n\n> {f.whale_alert_brief}" if f.whale_alert_brief else ""
+    lines = [f"## {star}{a.ticker} — {f.name or a.ticker}{tag}{whale}", "", f"`{_flag_line(a)}`", ""]
     if a.narrative:
         lines.append(a.narrative)
     else:

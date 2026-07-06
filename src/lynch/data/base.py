@@ -69,8 +69,12 @@ class Fundamentals:
     pe_5y_min: float | None = None
     pe_5y_avg: float | None = None
 
-    # ── 舆情安全网（Yahoo .news 最新头条）──
+    # ── 舆情安全网（实时新闻 + 8-K，禁止缓存）──
     recent_news_block: str = ""
+
+    # ── 政要巨鳄雷达（议员交易 + 13F，周缓存匹配）──
+    whale_alert_block: str = ""
+    whale_alert_brief: str = ""  # 简报前置一行，如 [🚨 政要异动] ...
 
 
 @dataclass(frozen=True)

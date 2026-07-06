@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .. import config
 from .base import BaseDataProvider, Fundamentals, FundamentalsError, QuickScreen, classify_company
+from .fmp import FmpProvider
 from .yahoo import YahooFinanceProvider
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "QuickScreen",
     "classify_company",
     "YahooFinanceProvider",
+    "FmpProvider",
     "get_provider",
 ]
 
@@ -29,9 +31,7 @@ def get_provider(name: str | None = None) -> BaseDataProvider:
     if key in ("yahoo", "yfinance"):
         provider: BaseDataProvider = YahooFinanceProvider()
     elif key == "fmp":
-        raise NotImplementedError(
-            "FMP 数据源尚未实现。请实现 data/fmp.py::FmpProvider(BaseDataProvider) 后在此注册。"
-        )
+        provider: BaseDataProvider = FmpProvider()
     elif key in ("jquants", "j-quants"):
         raise NotImplementedError(
             "J-Quants 数据源尚未实现。请实现 data/jquants.py::JQuantsProvider(BaseDataProvider) 后在此注册。"

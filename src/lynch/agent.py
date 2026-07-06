@@ -58,9 +58,16 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     cur = f.currency
     lines: list[str] = []
 
-    # 舆情安全网：最新头条置顶（优先于颗粒度与财务区块）
+    # 舆情安全网：最新头条 + 8-K 置顶
     if f.recent_news_block:
         lines.append(f.recent_news_block)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # 政要巨鳄雷达（议员 + 13F）
+    if f.whale_alert_block:
+        lines.append(f.whale_alert_block)
         lines.append("")
         lines.append("---")
         lines.append("")
