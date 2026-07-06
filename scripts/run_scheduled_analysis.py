@@ -221,6 +221,7 @@ def build_briefing(
     ai_mode: bool = False,
     flat_sections: list[str] | None = None,
     us_session_date: str | None = None,
+    provider_name: str = "yahoo (yfinance)",
 ) -> str:
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M JST")
     title = MODE_TITLES.get(mode, "自选股监控日报")
@@ -236,7 +237,7 @@ def build_briefing(
         f"{date_str} ｜ 生成于 {now} ｜ 分析 {counts['analyzed']}只"
         f"（AI {counts['ai']} / 仅硬指标 {counts['data_only']}）{funnel}",
         "",
-        "> 数据来源：Yahoo Finance ｜ 铁律：数据为王，不预测宏观，长线持有。",
+        f"> 数据来源：{provider_name} ｜ 铁律：数据为王，不预测宏观，长线持有。",
     ]
     if session_line:
         header.append(session_line)
@@ -445,6 +446,7 @@ def main() -> int:
     briefing = build_briefing(
         args.mode, date_str, top_block, main_sections, hardcore_sections, stats, counts,
         ai_mode=ai_mode, flat_sections=flat_sections, us_session_date=us_session,
+        provider_name=provider.name,
     )
 
     print("\n" + "=" * 60)

@@ -20,7 +20,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-from src.lynch import analyze_company  # noqa: E402
+from src.lynch import analyze_company, get_provider  # noqa: E402
 from src.lynch.fundamentals import FundamentalsError  # noqa: E402
 from src.lynch.llm import LLMError, is_configured  # noqa: E402
 
@@ -39,7 +39,8 @@ def main() -> int:
     elif not is_configured():
         print("⚠️  未检测到 GEMINI_API_KEY，自动切换为 --data-only 模式（仅硬指标）。\n")
 
-    print(f"📡 正在抓取 {args.ticker} 的基本面数据 (Yahoo Finance)...\n")
+    provider = get_provider()
+    print(f"📡 正在抓取 {args.ticker} 的基本面数据 ({provider.name})...\n")
     try:
         result = analyze_company(
             args.ticker, user_note=args.note, data_only=data_only, model=args.model
