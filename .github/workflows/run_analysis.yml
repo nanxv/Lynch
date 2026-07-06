@@ -67,6 +67,7 @@ jobs:
             "0 21 * * 1-5")                 mode=daily ;;
             *)                              mode="${{ github.event.inputs.mode }}"; mode="${mode:-daily}" ;;
           esac
+          mode="${mode,,}"
           echo "value=$mode" >> "$GITHUB_OUTPUT"
 
       - name: Run Lynch pipeline

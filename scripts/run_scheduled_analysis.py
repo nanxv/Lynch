@@ -250,7 +250,7 @@ def build_briefing(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="彼得·林奇自动化流水线（双层漏斗·邮件版）")
-    parser.add_argument("--mode", choices=["daily", "weekly", "monthly", "quarterly", "annual"],
+    parser.add_argument("--mode", type=str.lower, choices=["daily", "weekly", "monthly", "quarterly", "annual"],
                         default="daily")
     parser.add_argument("--scope", choices=["watchlist", "full"], default="watchlist",
                         help="watchlist=仅必看列表 / full=全市场双层漏斗")
