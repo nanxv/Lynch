@@ -72,6 +72,8 @@ jobs:
           AI_SORT_KEY: ${{ vars.AI_SORT_KEY }}
           MARKET: ${{ vars.MARKET }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          FMP_DAILY_QUOTA: "0"
+          FMP_REQUEST_INTERVAL: "0.21"
           # Gemini（核心推理大脑）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}

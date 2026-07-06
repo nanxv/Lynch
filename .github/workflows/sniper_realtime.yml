@@ -29,6 +29,8 @@ jobs:
         env:
           DATA_PROVIDER: ${{ vars.DATA_PROVIDER }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          FMP_DAILY_QUOTA: "0"
+          FMP_REQUEST_INTERVAL: "0.21"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}

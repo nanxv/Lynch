@@ -955,4 +955,6 @@ class FmpProvider(BaseDataProvider):
 
     def api_usage_summary(self) -> str:
         b = _api().budget
+        if DAILY_QUOTA <= 0:
+            return f"FMP 今日 API 用量: {b.count()}（Starter 无日封顶，限速 300/分钟）"
         return f"FMP 今日 API 用量: {b.count()}/{DAILY_QUOTA}"

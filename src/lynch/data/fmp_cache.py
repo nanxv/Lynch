@@ -70,6 +70,8 @@ class FmpApiBudget:
         return int(self._load().get("count", 0))
 
     def remaining(self) -> int:
+        if DAILY_QUOTA <= 0:
+            return 999_999
         return max(0, DAILY_QUOTA - self.count())
 
     def increment(self, n: int = 1) -> int:
@@ -79,14 +81,17 @@ class FmpApiBudget:
         data["date"] = _today_str()
         _save_json(self.path, data)
         used = data["count"]
-        if used >= DAILY_QUOTA - 20:
-            log.warning("FMP API 额度告警：今日已用 %s/%s", used, DAILY_QUOTA)
+        if DAILY_QUOTA > 0 and used >= DAILY_QUOTA - 20:
+            log.warning("FMP API 日额度告警：今日已用 %s/%s", used, DAILY_QUOTA)
         return used
 
     def check(self) -> None:
+        if DAILY_QUOTA <= 0:
+            return
         if self.count() >= DAILY_QUOTA:
             raise RuntimeError(
-                f"FMP 免费档日额度已耗尽（{DAILY_QUOTA} 次/天），请明日再试或升级套餐。"
+                f"FMP 日额度已耗尽（{DAILY_QUOTA} 次/天）。"
+                "付费 Starter 请将 FMP_DAILY_QUOTA 设为 0 以禁用此限制。"
             )
 
 
