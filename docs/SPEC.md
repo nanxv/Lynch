@@ -2,9 +2,9 @@
 
 | 字段 | 内容 |
 |------|------|
-| 文档版本 | v0.2.0-draft |
-| 状态 | 待审阅 |
-| 最后更新 | 2026-06-22 |
+| 文档版本 | v0.2.1 |
+| 状态 | 铁律 2.5 App 已实现；Lynch Agent 生产运行中 |
+| 最后更新 | 2026-07-06 |
 | 代码仓库 | `~/Projects/stock-monitor` |
 | 审阅目的 | 确认产品边界、策略逻辑、技术架构与上线路径 |
 
@@ -658,18 +658,36 @@ App Push 通过 `push_tokens` 表支持多设备。
 
 ### B. 相关文档
 
-- `docs/使用说明.md` — CLI + Telegram 用户手册
+- `README.md` — 仓库总览与快速开始
+- `docs/使用说明.md` — CLI + Telegram + Lynch 用户手册
+- `docs/lynch-requirements.html` — **Lynch Agent 全链路技术需求**（FMP、漏斗、五周期简报、狙击）
 - `docs/app-roadmap.md` — 技术路线图
 - `mobile/README.md` — App 本地启动说明
 - `http://127.0.0.1:8000/docs` — 自动生成的 OpenAPI 文档
 
-### C. 版本历史
+### C. Lynch Agent（独立子系统）
+
+与铁律 2.5 监控并行存在，通过 `src/lynch/` 实现：
+
+| 能力 | 说明 |
+|------|------|
+| 数据层 | `DATA_PROVIDER=fmp`（生产）或 `yahoo`；FMP stable API + 本地缓存 |
+| 漏斗 | SEC 美股抽样 → 硬指标粗筛 → Gemini 熔断（≤30 只） |
+| 简报 | daily / weekly / monthly / quarterly / annual 五种模式，SMTP 邮件 |
+| 安全网 | 实时新闻 + 8-K + Gemini 黑天鹅一票否决 |
+| 巨鳄雷达 | 议员交易 + 13F 机构持仓变动 |
+| 狙击 | 收盘后（日报内）+ 盘中实时（独立 workflow） |
+
+详见 `docs/lynch-requirements.html`。
+
+### D. 版本历史
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v0.1.0 | 2026-06-22 | CLI + Telegram + Cron |
 | v0.2.0 | 2026-06-22 | FastAPI + SQLite + Expo App 雏形 |
 | v0.2.0-draft | 2026-06-22 | 本规格说明书 |
+| v0.2.1 | 2026-07-06 | 文档同步 Lynch Agent（FMP、五周期、舆情/巨鳄雷达） |
 
 ---
 

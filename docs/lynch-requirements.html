@@ -67,33 +67,38 @@
 <h1>彼得·林奇 Lynch Agent — 全链路需求文档</h1>
 
 <div class="meta">
-  <strong>文档版本</strong>：2026-07-05 · 对齐 <code>main</code> @ <code>130b10b</code> 及之后<br>
+  <strong>文档版本</strong>：2026-07-06 · 对齐 <code>main</code> @ <code>fa7800c</code><br>
   <strong>仓库</strong>：<code>github.com/nanxv/Lynch</code><br>
-  <strong>产品定位</strong>：美股重心 · 双层漏斗 · 五周期简报 · 盘中狙击 · 多维时间轴估值对齐<br>
+  <strong>产品定位</strong>：美股重心 · FMP 数据层 · 双层漏斗 · 五周期简报 · 舆情安全网 · 巨鳄雷达 · 盘中狙击<br>
   <strong>设计铁律</strong>：数据为王，不预测宏观；Gemini 【行动指令】为最终裁决，Python 不做二次篡改
 </div>
 
 <div class="callout">
-  <strong>投资重心（2026-07 起）</strong>：默认市场 <code>MARKET=US</code>。全市场漏斗仅扫 SEC 美股抽样（过滤 <code>.T</code> 日股）。
-  必看列表 <code>watchlist.yaml</code> 为纯美股（AMD / NVDA / META）；日股备用清单见 <code>watchlist-jp.yaml</code>，默认流水线不纳入。
+  <strong>投资重心（2026-07）</strong>：默认 <code>MARKET=US</code>、<code>DATA_PROVIDER=fmp</code>。
+  全市场漏斗扫 SEC 美股抽样（过滤 <code>.T</code>）；<code>watchlist.yaml</code> 为美日混合影子持仓，
+  <strong>full 模式时永远纳入、不受 MARKET 过滤</strong>。日股备用见 <code>watchlist-jp.yaml</code>。
+  <code>status: avoid</code> 的标的在所有流水线中物理隔离。
 </div>
 
 <h2>1. 系统总览</h2>
 
-<p>自动化投研流水线：从<strong>成分股池 / 自选股</strong>出发 → Yahoo Finance 抓取 → 本地林奇硬指标 → 按报告周期注入不同数据颗粒度 → 选择性调用 Gemini 四步会诊 → 组装 Markdown 简报 → Gmail SMTP 发送。</p>
+<p>自动化投研流水线：从<strong>成分股池 / 自选股</strong>出发 → <strong>FMP stable API</strong>（或 Yahoo 回退）抓取 →
+本地林奇硬指标 → 舆情/8-K 安全网 + 巨鳄雷达 → 按报告周期注入不同数据颗粒度 →
+选择性调用 Gemini 四步会诊 → 组装 Markdown 简报 → Gmail SMTP 发送。</p>
 
 <div class="flow">┌──────────────── GitHub Actions / 本地 CLI ─────────────────┐
 │ run_scheduled_analysis.py  │  run_realtime_sniper.py  │ lynch_cli.py │
 └───────────────────────────────┬──────────────────────────────────────┘
                                 ▼
-┌──────────── 候选集：universe(US) → first_funnel → rank_and_cap ────────┐
-│  + watchlist.yaml 必看股 is_priority（永远优先送 AI）                    │
+┌──────── 候选集：universe(US) → first_funnel → rank_and_cap ────────┐
+│  + watchlist.yaml 必看股 is_priority（永远优先送 AI；跳过 avoid）      │
 └───────────────────────────────┬──────────────────────────────────────┘
                                 ▼
-┌──────── YahooFinanceProvider · mode 决定颗粒度 · temporal 时间轴对齐 ───┐
+┌──────── FmpProvider / YahooFinanceProvider · mode 颗粒度 · temporal ─┐
+│  实时：quote · news/stock · 8-K  │  缓存：profile/财报/历史价          │
 └───────────────────────────────┬──────────────────────────────────────┘
                                 ▼
-┌──────── compute_metrics · fatal_warnings · 狙击拦截 · history 存档 ────┐
+┌──────── compute_metrics · fatal_warnings · 狙击 · history 存档 ────────┐
 └───────────────────────────────┬──────────────────────────────────────┘
                                 ▼
 ┌──────── analyze_company + Gemini · 裁决看板 · 双轨详情 · send_email ────┘</div>
@@ -163,7 +168,8 @@
   <tbody>
     <tr><td>配置</td><td>环境变量、<code>DEFAULT_MARKET</code>、Ticker 纠错、漏斗阈值</td><td><code>src/lynch/config.py</code></td></tr>
     <tr><td>成分股池</td><td>SEC / S&P500 / NASDAQ100 / JPX</td><td><code>src/lynch/universe.py</code></td></tr>
-    <tr><td>数据供应</td><td>Yahoo 实现 + mode 分支</td><td><code>src/lynch/data/yahoo.py</code>, <code>base.py</code></td></tr>
+    <tr><td>数据供应</td><td>FMP stable + Yahoo 回退；舆情/8-K/巨鳄雷达</td><td><code>data/fmp.py</code>, <code>fmp_cache.py</code>, <code>fmp_whale.py</code>, <code>yahoo.py</code>, <code>base.py</code></td></tr>
+    <tr><td>影子持仓</td><td>held / watch / avoid 状态解析</td><td><code>src/lynch/watchlist.py</code></td></tr>
     <tr><td>时间轴</td><td>财报锚定价、1 月前价、5 年 P/E 水位</td><td><code>src/lynch/temporal.py</code></td></tr>
     <tr><td>颗粒度区块</td><td>月/季/年 Markdown 高敏数据</td><td><code>src/lynch/data/granularity.py</code></td></tr>
     <tr><td>量化引擎</td><td>PEG、排雷、SBI、公司分类</td><td><code>src/lynch/metrics.py</code></td></tr>
@@ -198,18 +204,48 @@
   </tbody>
 </table>
 
-<h3>4.3 必看列表</h3>
+<h3>4.3 必看列表与 status</h3>
 <table>
   <thead><tr><th>文件</th><th>内容</th><th>默认是否扫描</th></tr></thead>
   <tbody>
-    <tr><td><code>watchlist.yaml</code></td><td>AMD, NVDA, META（US）</td><td>是（full 时 priority；watchlist scope 唯一来源）</td></tr>
-    <tr><td><code>watchlist-jp.yaml</code></td><td>4063.T, 6315.T 等日股备用</td><td>否；手动 <code>--tickers</code> 纳入</td></tr>
+    <tr><td><code>watchlist.yaml</code></td><td>美日混合影子持仓（NISA 同步）</td><td>是（full 时 priority；watchlist scope 唯一来源）</td></tr>
+    <tr><td><code>watchlist-jp.yaml</code></td><td>日股备用清单</td><td>否；手动 <code>--tickers</code> 纳入</td></tr>
   </tbody>
 </table>
+<p><code>status</code> 字段：<code>held</code>（已持有，季报/年报触发审视铁律）· <code>watch</code>（观望，默认）·
+<code>avoid</code>（黑名单，<strong>物理隔离</strong>——流水线、狙击、CLI 全部跳过）。</p>
 
 <h2>5. 数据供应层</h2>
 
-<h3>5.1 Yahoo API 映射</h3>
+<h3>5.1 提供商选择（<code>DATA_PROVIDER</code>）</h3>
+<table>
+  <thead><tr><th>值</th><th>实现</th><th>生产状态</th></tr></thead>
+  <tbody>
+    <tr><td><code>yahoo</code>（默认）</td><td><code>YahooFinanceProvider</code></td><td>本地开发 / 无 FMP key 时</td></tr>
+    <tr><td><code>fmp</code></td><td><code>FmpProvider</code></td><td><strong>GitHub Actions 推荐</strong>；需 <code>FMP_API_KEY</code></td></tr>
+    <tr><td><code>jquants</code></td><td>未实现</td><td>—</td></tr>
+  </tbody>
+</table>
+<p>工厂入口：<code>src/lynch/data/__init__.py::get_provider()</code>。上层漏斗与 Agent 与具体 Provider 解耦。</p>
+
+<h3>5.2 FMP stable API（<code>fmp.py</code>）</h3>
+<table>
+  <thead><tr><th>数据类型</th><th>端点示例</th><th>缓存策略</th></tr></thead>
+  <tbody>
+    <tr><td>公司概况 / 财报</td><td><code>profile</code>, <code>income-statement</code>, <code>balance-sheet</code>, <code>cash-flow-statement</code></td><td><code>data/cache/fmp/static/{TICKER}.json</code>；季末后约 50 天刷新窗口</td></tr>
+    <tr><td>历史收盘价</td><td><code>historical-price-eod/full</code></td><td>同上静态包</td></tr>
+    <tr><td>实时报价</td><td><code>quote</code></td><td><strong>禁止缓存</strong></td></tr>
+    <tr><td>新闻舆情</td><td><code>news/stock</code></td><td><strong>禁止缓存</strong>；空则 Yahoo 回退</td></tr>
+    <tr><td>SEC 8-K</td><td><code>sec-filings-8k</code></td><td><strong>禁止缓存</strong></td></tr>
+    <tr><td>议员交易</td><td><code>senate-trades?symbol=</code>, <code>house-trades?symbol=</code></td><td>按 symbol 查询（stable API 要求）；禁止全局 RSS</td></tr>
+    <tr><td>13F 机构</td><td><code>institutional-ownership/*</code></td><td>周缓存（伯克希尔/桥水/文艺复兴）</td></tr>
+    <tr><td>漏斗粗筛</td><td><code>profile</code> + <code>ratios-ttm</code></td><td>冷启动轻量路径（2~3 次 API/股）</td></tr>
+  </tbody>
+</table>
+<p class="muted">HTTP 402（免费档受限标的）财报回退 Yahoo。<code>optional=True</code> 的端点对 400/402/403/404 静默返回空列表。
+Starter 付费：<code>FMP_DAILY_QUOTA=0</code>、<code>FMP_REQUEST_INTERVAL=0.21</code>。巨鳄雷达失败不中断主分析。</p>
+
+<h3>5.3 Yahoo API 映射（回退 / 默认）</h3>
 <table>
   <thead><tr><th>方法</th><th>数据源</th><th>用途</th></tr></thead>
   <tbody>
@@ -221,7 +257,15 @@
   </tbody>
 </table>
 
-<h3>5.2 价格口径（避免「尸检报告」误解）</h3>
+<h3>5.4 舆情安全网与巨鳄雷达</h3>
+<ul>
+  <li><strong>舆情区块</strong>（<code>recent_news_block</code>）：FMP 新闻 + SEC 8-K，注入 <code>build_data_block</code> 置顶；
+    Prompt 规则 #4 要求 Gemini 对 FDA 召回、欺诈、重大合规风险等<strong>一票否决</strong>为 SELL/AVOID。</li>
+  <li><strong>巨鳄雷达</strong>（<code>whale_alert_block</code> / <code>whale_alert_brief</code>）：
+    近 14 天国会议员买卖 + 三大机构 13F 持仓变动；简报可前置 <code>[🚨 政要异动]</code> 一行。</li>
+</ul>
+
+<h3>5.5 价格口径（避免「尸检报告」误解）</h3>
 <table>
   <thead><tr><th>场景</th><th>价格定义</th></tr></thead>
   <tbody>
@@ -233,7 +277,7 @@
   </tbody>
 </table>
 
-<h3>5.3 多维时间轴 (temporal.py)</h3>
+<h3>5.6 多维时间轴 (temporal.py)</h3>
 <p><code>Fundamentals</code> 扩展字段经 <code>_finalize_with_temporal()</code> 注入：<code>spot_price</code>, <code>valuation_anchor_date/price/pe</code>, <code>price_1mo_ago</code>, <code>pe_1mo_ago</code>, <code>peg_1mo_ago</code>, <code>pe_5y_min/avg</code>。置顶写入 <code>granularity_block</code> 与「多维时间轴 · 估值锚点对齐」区块。</p>
 
 <table>
@@ -274,17 +318,19 @@ CAGR：多年 EPS 或净利润 CAGR；拒绝 yfinance 单季 earningsGrowth
 
 <h2>7. 双层漏斗 (funnel.py)</h2>
 <ul>
-  <li><strong>第一层</strong>：并发 <code>get_quick_screen</code>；PEG≤1.5 或 净现金比≥0.30，且负债≤0.50。</li>
+  <li><strong>第一层</strong>：并发 <code>get_quick_screen</code>（FMP 冷启动用 <code>ratios-ttm</code> 的 PEG/负债）；
+    PEG≤1.5 或 净现金比≥0.30，且负债≤0.50。</li>
   <li><strong>第二层</strong>：watchlist 永远 AI；其余按 PEG/净现金排序，前 <code>MAX_AI_ANALYSIS_COUNT</code>（默认 30）送 Gemini。</li>
   <li><strong>fatal_warnings</strong> → 邮件置顶红灯；<strong>is_quality_pick</strong> → 优质股（≤20）；<strong>cyclical_watch</strong> → 周期观察。</li>
   <li><strong>check_daily_sniper_trigger</strong>：daily + full 幸存池 + SBI + 日 K 跌&gt;5% + PEG&lt;0.5。</li>
 </ul>
+<p class="muted">GitHub Actions 在 workflow 中缓存 <code>data/cache/fmp/</code>，减少重复拉取静态财报。</p>
 
 <h2>8. AI 编排</h2>
 <ol>
   <li><code>get_fundamentals(ticker, mode=report_mode)</code></li>
   <li><code>compute_metrics(f)</code></li>
-  <li><code>build_data_block</code> — 颗粒度区块置顶，含 spot 与锚定价双轨展示</li>
+  <li><code>build_data_block</code> — 颗粒度区块置顶；含舆情监控、巨鳄雷达、spot 与锚定价双轨展示</li>
   <li>注入 <code>get_mode_context(mode)</code>、<code>story_diff_context</code>（有历史时）、RAG</li>
   <li><code>llm.generate</code> → 四步分析 + 文末唯一【行动指令】</li>
   <li><code>extract_signal</code> — 取<strong>最后一条</strong>指令行；Python 不 downgrade</li>
@@ -340,7 +386,10 @@ CAGR：多年 EPS 或净利润 CAGR；拒绝 yfinance 单季 earningsGrowth
   <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
   <tbody>
     <tr><td><code>MARKET</code></td><td><strong>US</strong></td><td>ALL / US / JP</td></tr>
-    <tr><td><code>DATA_PROVIDER</code></td><td>yahoo</td><td>数据源</td></tr>
+    <tr><td><code>DATA_PROVIDER</code></td><td>yahoo</td><td>yahoo / <strong>fmp</strong>（生产）</td></tr>
+    <tr><td><code>FMP_API_KEY</code></td><td>—</td><td>FMP 必填（Secret）</td></tr>
+    <tr><td><code>FMP_DAILY_QUOTA</code></td><td>0</td><td>0=禁用日封顶（Starter）；免费档可设 250</td></tr>
+    <tr><td><code>FMP_REQUEST_INTERVAL</code></td><td>0.21</td><td>请求间隔秒数（≈286/分钟）</td></tr>
     <tr><td><code>UNIVERSE_SOURCES</code></td><td>us</td><td>us / sp500 / nasdaq100 / jpx</td></tr>
     <tr><td><code>US_MARKET_SAMPLE_SIZE</code></td><td>500</td><td>SEC 随机抽样</td></tr>
     <tr><td><code>MAX_UNIVERSE_SCAN</code></td><td>1200</td><td>海选上限</td></tr>
@@ -360,6 +409,9 @@ CAGR：多年 EPS 或净利润 CAGR；拒绝 yfinance 单季 earningsGrowth
 <ul>
   <li><code>data/history/*.jsonl</code> — 故事线存档</li>
   <li><code>data/sniper_cache/*.json</code> — 盘中防刷</li>
+  <li><code>data/cache/fmp/static/*.json</code> — FMP 静态财报缓存</li>
+  <li><code>data/cache/fmp/whale/*.json</code> — 13F 周缓存</li>
+  <li><code>data/cache/fmp/api_usage.json</code> — FMP 日用量计数</li>
   <li><code>books/lynch_book.rag.json</code> — RAG 索引</li>
 </ul>
 
@@ -367,7 +419,7 @@ CAGR：多年 EPS 或净利润 CAGR；拒绝 yfinance 单季 earningsGrowth
 <ul>
   <li><strong>容错</strong>：单股失败不中断；错误渲染为「分析失败：{原因}」块（如 temporal 字段冲突已修复）。</li>
   <li><strong>成本</strong>：daily 零 Gemini（狙击命中除外）；AI 硬顶 30 只/次。</li>
-  <li><strong>限流</strong>：Yahoo 重试 + SEC 抽样 + 并发 8；Actions timeout 30min / 狙击 15min。</li>
+  <li><strong>限流</strong>：FMP 间隔节流 + 429 重试；Yahoo 重试 + SEC 抽样 + 并发 8；Actions timeout 30min / 狙击 15min。</li>
   <li><strong>时区</strong>：简报时间戳 Asia/Tokyo；Cron 配置 UTC。</li>
   <li><strong>信任</strong>：裁决看板直接反映 Gemini 【行动指令】；无 Python valuation veto。</li>
 </ul>

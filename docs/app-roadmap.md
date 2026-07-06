@@ -34,15 +34,28 @@ chmod +x scripts/run_api.sh
 # 文档: http://127.0.0.1:8000/docs
 ```
 
-## 待做（Phase 2 — Expo 前端）
+## 已完成（Phase 2 — Expo 前端雏形）
 
 - `mobile/` Expo + TypeScript 三 Tab UI
 - 雷达仪表盘 / 股票池管理 / 信号日志
 - 注册 Expo Push Token → `POST /api/push-tokens`
+- 详见 `mobile/README.md`
+
+## 并行子系统：Lynch Agent（非 App，已生产运行）
+
+GitHub Actions 自动发五种简报邮件 + 盘中狙击，与铁律 2.5 App 独立：
+
+- 入口：`scripts/run_scheduled_analysis.py`、`scripts/run_realtime_sniper.py`
+- 文档：`docs/lynch-requirements.html`、`docs/使用说明.md`（林奇章节）
 
 ## 待做（Phase 3 — 云端部署）
 
 - 后端部署到 Railway / Render / EC2
 - SQLite → Supabase PostgreSQL（可选）
-- 云端 Cron 替代 Mac crontab
+- 云端 Cron 替代 Mac crontab（铁律 2.5 监控）
 - APNs 经 Expo 自动路由，无需单独证书（开发阶段）
+
+## 待做（Phase 4 — 正式 iOS 发布）
+
+- `eas build` → TestFlight
+- App Store 图标 / 截图 / 隐私说明
