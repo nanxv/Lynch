@@ -58,6 +58,13 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     cur = f.currency
     lines: list[str] = []
 
+    # 舆情安全网：最新头条置顶（优先于颗粒度与财务区块）
+    if f.recent_news_block:
+        lines.append(f.recent_news_block)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     # 模式专属高敏数据置顶（季/月/年会诊的权威口径）
     if f.granularity_block:
         lines.append(f.granularity_block)

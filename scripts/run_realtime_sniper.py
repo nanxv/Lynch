@@ -44,7 +44,18 @@ def main() -> int:
         return 0
 
     provider = get_provider()
-    stocks = [s for s in load_config().stocks if market == "ALL" or s.market.upper() == market]
+    stocks = [
+        s for s in load_config().stocks
+        if s.user_status != "avoid"
+        and (market == "ALL" or s.market.upper() == market)
+    ]
+    avoided = [
+        correct_ticker(s.ticker)
+        for s in load_config().stocks
+        if s.user_status == "avoid" and (market == "ALL" or s.market.upper() == market)
+    ]
+    if avoided:
+        print(f"🚫 黑名单 avoid 跳过：{', '.join(avoided)}")
     if not stocks:
         print(f"⚠️  watchlist 中没有 market={market} 的标的。")
         return 0

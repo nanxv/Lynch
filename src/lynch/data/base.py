@@ -69,6 +69,9 @@ class Fundamentals:
     pe_5y_min: float | None = None
     pe_5y_avg: float | None = None
 
+    # ── 舆情安全网（Yahoo .news 最新头条）──
+    recent_news_block: str = ""
+
 
 @dataclass(frozen=True)
 class QuickScreen:

@@ -84,6 +84,35 @@ def _fetch_info(ticker: str) -> dict:
     raise FundamentalsError(f"{ticker}: 无法获取 info（{last}）")
 
 
+def _fetch_recent_news_block(tk: yf.Ticker, *, limit: int = 5) -> str:
+    """拉取 Yahoo .news 最新头条，供舆情黑天鹅熔断审查。"""
+    header = "【最新市场舆情监控（过去数日核心头条）】"
+    try:
+        raw = tk.news or []
+    except Exception:  # noqa: BLE001
+        raw = []
+    if not raw:
+        return f"{header}\n- （暂无 Yahoo Finance 新闻 feed）"
+    lines = [header]
+    for item in raw[:limit]:
+        if not isinstance(item, dict):
+            continue
+        # yfinance 新版：title/publisher 嵌套在 content 内
+        content = item.get("content") if isinstance(item.get("content"), dict) else item
+        title = str(content.get("title") or item.get("title") or "").strip()
+        pub = ""
+        provider = content.get("provider")
+        if isinstance(provider, dict):
+            pub = str(provider.get("displayName") or provider.get("name") or "").strip()
+        if not pub:
+            pub = str(content.get("publisher") or item.get("publisher") or item.get("source") or "未知").strip()
+        if title:
+            lines.append(f"- {title} (来源: {pub})")
+    if len(lines) == 1:
+        return f"{header}\n- （新闻条目无有效标题）"
+    return "\n".join(lines)
+
+
 def _period_label(ts: object) -> str:
     t = pd.Timestamp(ts)
     q = (t.month - 1) // 3 + 1
@@ -460,6 +489,8 @@ class YahooFinanceProvider(BaseDataProvider):
         base = _base_fundamentals_from_info(
             ticker, info, income, balance, cash, mode=mode, source=self.name,
         )
+        news_block = _fetch_recent_news_block(tk)
+        base = dataclasses.replace(base, recent_news_block=news_block)
         return _finalize_with_temporal(base, tk, mode=mode)
 
     def get_intraday_snapshot(self, ticker: str) -> dict[str, Any]:

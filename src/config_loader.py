@@ -40,7 +40,7 @@ class StockEntry:
     market: str
     tier: int
     note: str = ""
-    user_status: str = "watch"  # held=已持有底仓 / watch=观望（来自 watchlist status 字段）
+    user_status: str = "watch"  # held / watch / avoid（avoid=黑名单物理隔离）
 
 
 @dataclass(frozen=True)
@@ -63,9 +63,11 @@ def load_config(
         raw = yaml.safe_load(f)
 
     if stocks is None:
-        from src.lynch.watchlist import load_watchlist_stocks
+        from src.lynch.watchlist import parse_stock_entry
 
-        stocks = load_watchlist_stocks()
+        with watchlist_path.open(encoding="utf-8") as f:
+            watchlist = yaml.safe_load(f)
+        stocks = [parse_stock_entry(s) for s in watchlist["stocks"]]
 
     strategy = StrategyConfig(**raw["strategy"])
     markets = {k: MarketConfig(**v) for k, v in raw["markets"].items()}

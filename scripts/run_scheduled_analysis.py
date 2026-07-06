@@ -81,6 +81,7 @@ from src.lynch.market_calendar import (  # noqa: E402
     should_run_daily_report,
 )
 from src.lynch.universe import get_universe  # noqa: E402
+from src.lynch.watchlist import list_avoided_tickers  # noqa: E402
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 
@@ -90,9 +91,11 @@ _SIGNAL_UNKNOWN_ORDER = SIGNAL_UNKNOWN
 
 # ── 候选集构建 ─────────────────────────────────────────────────
 def _watchlist(market: str) -> dict[str, tuple[str, str, str]]:
-    """返回 {纠错后ticker: (name, note, user_status)}（必看列表）。"""
+    """返回 {纠错后ticker: (name, note, user_status)}（必看列表；跳过 avoid）。"""
     out: dict[str, tuple[str, str, str]] = {}
     for s in load_config().stocks:
+        if s.user_status == "avoid":
+            continue
         if market != "ALL" and s.market.upper() != market:
             continue
         out[correct_ticker(s.ticker)] = (s.name, s.note, s.user_status)
@@ -266,6 +269,9 @@ def main() -> int:
         print(f"⚠️  {args.mode} 模式但未检测到 GEMINI_API_KEY，本次全部降级为仅硬指标。\n")
 
     print(f"📡 [{args.mode}/{args.scope}] 数据源={provider.name} market={args.market}\n")
+    avoided = list_avoided_tickers()
+    if avoided:
+        print(f"🚫 黑名单 avoid 跳过：{', '.join(avoided)}\n")
     working, watch, stats = _build_working_set(args, provider)
     if not working:
         print("⚠️  没有可分析的标的。")

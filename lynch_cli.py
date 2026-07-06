@@ -33,7 +33,7 @@ from src.lynch.history import (  # noqa: E402
 from src.lynch.llm import LLMError  # noqa: E402
 from src.lynch.report_modes import normalize_mode  # noqa: E402
 from src.lynch.signals import extract_signal  # noqa: E402
-from src.lynch.watchlist import user_status_for_ticker  # noqa: E402
+from src.lynch.watchlist import is_ticker_avoided, user_status_for_ticker  # noqa: E402
 
 
 def main() -> int:
@@ -51,6 +51,10 @@ def main() -> int:
         return 1
 
     ticker = args.ticker.strip()
+    if is_ticker_avoided(ticker):
+        print(f"🚫 {ticker} 在 watchlist.yaml 中标记为 avoid，已物理隔离，跳过分析。")
+        return 0
+
     report_mode = normalize_mode(args.mode)
     provider = get_provider()
     prev = load_previous(ticker)
