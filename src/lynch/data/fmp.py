@@ -28,7 +28,7 @@ from .fmp_cache import (
     needs_static_refresh,
     save_static_cache,
 )
-from .fmp_whale import analyze_whale_signals, get_institutional_snapshots, get_politician_trades
+from .fmp_whale import analyze_whale_signals, get_institutional_snapshots
 from .granularity import format_annual_block, format_monthly_block, format_quarterly_block
 
 log = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ class _FmpClient:
                 last_exc = FundamentalsError(f"FMP 限流 {path}: 429 Too Many Requests")
                 continue
 
-            if resp.status_code in (402, 403, 404):
+            if resp.status_code in (400, 402, 403, 404):
                 if optional:
                     log.debug("FMP optional miss %s (%s): %s", path, resp.status_code, resp.text[:80])
                     self.budget.increment()
@@ -777,14 +777,20 @@ def _finalize_fmp(
     return dataclasses.replace(f, granularity_block=gran)
 
 
+def _fetch_symbol_politician_trades(api: _FmpClient, sym: str) -> list[dict]:
+    """stable API 要求按 symbol 查询议员交易（全局 RSS 已不可用）。"""
+    senate = _first_list(api.get("senate-trades", {"symbol": sym, "limit": 50}, optional=True)) or []
+    house = _first_list(api.get("house-trades", {"symbol": sym, "limit": 50}, optional=True)) or []
+    for row in senate:
+        row["_chamber"] = "senate"
+    for row in house:
+        row["_chamber"] = "house"
+    return senate + house
+
+
 def _whale_intel(ticker: str) -> tuple[str, str]:
     api = _api()
-
-    def fetch_senate():
-        return _first_list(api.get("senate-trades", {"page": 0, "limit": 250}, optional=True))
-
-    def fetch_house():
-        return _first_list(api.get("house-trades", {"page": 0, "limit": 250}, optional=True))
+    sym = correct_ticker(ticker)
 
     def fetch_dates(cik: str):
         return _first_list(
@@ -800,9 +806,41 @@ def _whale_intel(ticker: str) -> tuple[str, str]:
             ),
         )
 
-    trades = get_politician_trades(fetch_senate, fetch_house)
+    trades = _fetch_symbol_politician_trades(api, sym)
     inst = get_institutional_snapshots(fetch_dates, fetch_portfolio)
-    return analyze_whale_signals(ticker, trades, inst)
+    return analyze_whale_signals(sym, trades, inst)
+
+
+def _light_quick_screen(sym: str) -> QuickScreen | None:
+    """漏斗粗筛：profile + ratios-ttm（2–3 次 API），避免冷启动拉全量财报。"""
+    api = _api()
+    profile = _first_row(api.get("profile", {"symbol": sym}))
+    if not profile:
+        return None
+    ratios = _first_row(api.get("ratios-ttm", {"symbol": sym}, optional=True)) or {}
+    quote = _first_row(api.get("quote", {"symbol": sym}, optional=True)) or {}
+
+    price = quote.get("price") or profile.get("price")
+    pe = quote.get("pe") or ratios.get("priceToEarningsRatioTTM")
+    quick_peg = ratios.get("priceToEarningsGrowthRatioTTM")
+    mcap = quote.get("marketCap") or profile.get("mktCap") or profile.get("marketCap")
+    exchange = profile.get("exchangeShortName") or profile.get("exchange")
+    debt_ratio = ratios.get("debtToEquityRatioTTM")
+
+    return QuickScreen(
+        ticker=sym,
+        name=profile.get("companyName"),
+        price=price,
+        market_cap=mcap,
+        exchange=exchange,
+        sbi_tradable=check_sbi_tradable(sym, exchange=exchange, market_cap=mcap),
+        trailing_pe=pe,
+        growth_yoy=None,
+        quick_peg=quick_peg,
+        debt_ratio=debt_ratio,
+        net_cash_per_share=None,
+        net_cash_ratio=None,
+    )
 
 
 class FmpProvider(BaseDataProvider):
@@ -819,7 +857,11 @@ class FmpProvider(BaseDataProvider):
         base = _build_fundamentals_from_bundle(sym, bundle, quote, mode=mode)
 
         news_block = _build_sensitive_intel_block(sym)
-        whale_brief, whale_block = _whale_intel(sym)
+        try:
+            whale_brief, whale_block = _whale_intel(sym)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("巨鳄雷达跳过 %s: %s", sym, exc)
+            whale_brief, whale_block = "", ""
 
         base = dataclasses.replace(
             base,
@@ -867,12 +909,9 @@ class FmpProvider(BaseDataProvider):
         sym = correct_ticker(ticker)
         try:
             bundle = _get_static_bundle(sym, allow_refresh=False)
-            if bundle.get("profile"):
-                quote = dict(bundle["profile"])
-            else:
-                quote = _fetch_quote(sym)
-            if not bundle.get("income_annual"):
-                bundle = _get_static_bundle(sym, allow_refresh=True)
+            if not (bundle.get("profile") and bundle.get("income_annual")):
+                return _light_quick_screen(sym)
+            quote = dict(bundle["profile"])
         except (FundamentalsError, RuntimeError):
             return None
         if not quote:

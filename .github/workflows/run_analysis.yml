@@ -48,6 +48,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore FMP static cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache/fmp
+          key: fmp-cache-${{ runner.os }}-${{ hashFiles('src/lynch/data/fmp.py', 'src/lynch/data/fmp_cache.py') }}
+          restore-keys: |
+            fmp-cache-${{ runner.os }}-
+
       - name: Resolve run mode
         id: mode
         run: |
