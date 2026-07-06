@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 from datetime import date
 from typing import Any
 
 import pandas as pd
 import requests
 
-from ..config import FMP_API_KEY, correct_ticker
+from ..config import FMP_API_KEY, FMP_REQUEST_INTERVAL, correct_ticker
 from ..metrics import check_sbi_tradable
 from ..report_modes import normalize_mode
 from ..temporal import (
@@ -53,40 +54,63 @@ class _FmpClient:
         self.budget = FmpApiBudget()
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "LynchStockMonitor/1.0"})
+        self._last_request_at = 0.0
+
+    def _throttle(self) -> None:
+        gap = FMP_REQUEST_INTERVAL - (time.monotonic() - self._last_request_at)
+        if gap > 0:
+            time.sleep(gap)
 
     def get(self, endpoint: str, params: dict | None = None, *, optional: bool = False) -> Any:
         _require_api_key()
-        self.budget.check()
         path = endpoint.strip("/")
         q = dict(params or {})
         q["apikey"] = FMP_API_KEY
         url = f"{_STABLE_BASE}/{path}"
-        try:
-            resp = self._session.get(url, params=q, timeout=30)
-        except requests.RequestException as exc:
-            raise FundamentalsError(f"FMP 请求失败 {path}: {exc}") from exc
+        last_exc: Exception | None = None
 
-        if resp.status_code in (402, 403, 404):
-            if optional:
-                log.debug("FMP optional miss %s (%s): %s", path, resp.status_code, resp.text[:80])
-                self.budget.increment()
+        for attempt in range(4):
+            self.budget.check()
+            self._throttle()
+            try:
+                resp = self._session.get(url, params=q, timeout=30)
+            except requests.RequestException as exc:
+                raise FundamentalsError(f"FMP 请求失败 {path}: {exc}") from exc
+            finally:
+                self._last_request_at = time.monotonic()
+
+            if resp.status_code == 429:
+                wait = min(60, 2 ** attempt * 5)
+                log.warning("FMP 429 限流 %s，%ss 后重试 (%s/4)", path, wait, attempt + 1)
+                time.sleep(wait)
+                last_exc = FundamentalsError(f"FMP 限流 {path}: 429 Too Many Requests")
+                continue
+
+            if resp.status_code in (402, 403, 404):
+                if optional:
+                    log.debug("FMP optional miss %s (%s): %s", path, resp.status_code, resp.text[:80])
+                    self.budget.increment()
+                    return []
+                raise FundamentalsError(
+                    f"FMP {path} 不可用 (HTTP {resp.status_code}): {resp.text[:200]}"
+                )
+
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError as exc:
+                raise FundamentalsError(f"FMP 请求失败 {path}: {exc}") from exc
+
+            self.budget.increment()
+            if not resp.text or resp.text.strip() in ("", "[]"):
                 return []
-            raise FundamentalsError(
-                f"FMP {path} 不可用 (HTTP {resp.status_code}): {resp.text[:200]}"
-            )
+            try:
+                return resp.json()
+            except ValueError as exc:
+                raise FundamentalsError(f"FMP 返回非 JSON: {path}") from exc
 
-        try:
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            raise FundamentalsError(f"FMP 请求失败 {path}: {exc}") from exc
-
-        self.budget.increment()
-        if not resp.text or resp.text.strip() in ("", "[]"):
-            return []
-        try:
-            return resp.json()
-        except ValueError as exc:
-            raise FundamentalsError(f"FMP 返回非 JSON: {path}") from exc
+        if last_exc:
+            raise last_exc
+        raise FundamentalsError(f"FMP 请求失败 {path}: 重试耗尽")
 
 
 _client: _FmpClient | None = None
@@ -842,21 +866,26 @@ class FmpProvider(BaseDataProvider):
     def get_quick_screen(self, ticker: str) -> QuickScreen | None:
         sym = correct_ticker(ticker)
         try:
-            quote = _fetch_quote(sym)
             bundle = _get_static_bundle(sym, allow_refresh=False)
+            if bundle.get("profile"):
+                quote = dict(bundle["profile"])
+            else:
+                quote = _fetch_quote(sym)
+            if not bundle.get("income_annual"):
+                bundle = _get_static_bundle(sym, allow_refresh=True)
         except (FundamentalsError, RuntimeError):
             return None
         if not quote:
             return None
 
-        profile = bundle.get("profile") or {}
+        profile = bundle.get("profile") or quote
         balance_a = bundle.get("balance_annual") or []
         income_a = bundle.get("income_annual") or []
 
         price = quote.get("price")
         pe = quote.get("pe")
         growth = _growth_yoy(income_a, "netIncome")
-        mcap = quote.get("marketCap") or profile.get("mktCap")
+        mcap = quote.get("marketCap") or profile.get("marketCap") or profile.get("mktCap")
         exchange = profile.get("exchangeShortName") or profile.get("exchange")
 
         cash = _latest_annual(balance_a, "cashAndCashEquivalents")

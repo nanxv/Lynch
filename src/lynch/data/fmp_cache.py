@@ -1,4 +1,4 @@
-"""FMP 本地持久化缓存与 API 日额度追踪（免费档 250 次/天）。"""
+"""FMP 本地持久化缓存与 API 日额度追踪。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from ..config import FMP_DAILY_QUOTA
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -17,7 +19,7 @@ STATIC_DIR = CACHE_ROOT / "static"
 WHALE_DIR = CACHE_ROOT / "whale"
 USAGE_FILE = CACHE_ROOT / "api_usage.json"
 
-DAILY_QUOTA = 250
+DAILY_QUOTA = FMP_DAILY_QUOTA
 EARNINGS_LAG_DAYS = 50  # 季末后约 N 天视为新财报窗口
 
 

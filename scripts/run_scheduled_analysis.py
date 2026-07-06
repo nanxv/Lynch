@@ -126,27 +126,36 @@ def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tup
         return qs, watch, stats
 
     # ── 全市场海选 + 第一层漏斗 ──
-    universe = _market_filter(get_universe(cap=args.max_universe), market)
-    stats["universe"] = len(universe)
-    survivors = first_funnel(universe, provider)
-    stats["survivors"] = len(survivors)
-
     watch_tickers = set(watch)
     priority_qs: list[QuickScreen] = []
     seen_priority: set[str] = set()
-    # 幸存者里属于必看列表的，标记为 priority
-    for q in survivors:
-        if q.ticker in watch_tickers:
-            priority_qs.append(dataclasses.replace(q, is_priority=True))
-            seen_priority.add(q.ticker)
-    # 必看列表里没通过漏斗（或没抓到）的，补齐 quick_screen 后强制纳入
-    for t in watch_tickers - seen_priority:
-        q = provider.get_quick_screen(t)
+
+    # 影子持仓优先拉取（在全市场漏斗之前，避免 429 后持仓分析失败）
+    for t in watch_tickers:
+        try:
+            q = provider.get_quick_screen(t)
+        except Exception:  # noqa: BLE001
+            q = None
         priority_qs.append(
             dataclasses.replace(q, is_priority=True)
             if q
             else QuickScreen(ticker=t, name=watch[t][0], is_priority=True)
         )
+        seen_priority.add(t)
+
+    universe = _market_filter(get_universe(cap=args.max_universe), market)
+    stats["universe"] = len(universe)
+    survivors = first_funnel(universe, provider)
+    stats["survivors"] = len(survivors)
+
+    # 幸存者里属于必看列表的，用漏斗结果替换先前粗筛（指标准确度更高）
+    funnel_by_ticker = {q.ticker: q for q in survivors if q.ticker in watch_tickers}
+    priority_qs = [
+        dataclasses.replace(funnel_by_ticker[q.ticker], is_priority=True)
+        if q.ticker in funnel_by_ticker
+        else q
+        for q in priority_qs
+    ]
     non_priority = [q for q in survivors if q.ticker not in watch_tickers]
     return priority_qs + non_priority, watch, stats
 

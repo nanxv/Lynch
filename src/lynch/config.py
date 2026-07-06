@@ -28,6 +28,10 @@ def _env_float(key: str, default: float) -> float:
 # 选择数据源：yahoo / fmp(默认升级目标) / jquants
 DATA_PROVIDER = _env_str("DATA_PROVIDER", "yahoo").lower()
 FMP_API_KEY = _env_str("FMP_API_KEY", "")
+# Starter 套餐约 300 次/分钟；请求间隔防 429（秒）
+FMP_REQUEST_INTERVAL = _env_float("FMP_REQUEST_INTERVAL", 0.25)
+# 日额度（免费 250；付费可在 .env 调高，如 FMP_DAILY_QUOTA=5000）
+FMP_DAILY_QUOTA = _env_int("FMP_DAILY_QUOTA", 250)
 
 # ── 硬编码数据纠错 ─────────────────────────────────────────────
 # 6859.T 实际是 Espec Corp，真正的 TOWA 是 6315.T。
