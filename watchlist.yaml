@@ -1,10 +1,24 @@
-# 影子持仓清单 — 与 NISA 账户同步（2026-07-05）
+# 影子持仓清单 — 与 NISA 账户同步（2026-07-06）
 # status: held=已持有底仓（季报/年报触发卖出铁律）/ watch=观望
 # 投信（eMAXIS 全世界·标普、SMT 黄金）不在 Lynch 单股扫描范围内
 #
 # 定时任务：watchlist 内所有标的不受 MARKET 过滤；全市场漏斗仍按 MARKET 变量。
 stocks:
   # ── 美股（NISA 现物）──
+  - ticker: "ACGL"
+    name: "Arch Capital Group"
+    market: US
+    tier: 1
+    status: held
+    note: "NISA 1株 · 取得约101.30 USD"
+
+  - ticker: "PTC"
+    name: "PTC Inc"
+    market: US
+    tier: 1
+    status: held
+    note: "NISA 1株 · 取得约122.72 USD"
+
   - ticker: "RKLB"
     name: "Rocket Lab"
     market: US
