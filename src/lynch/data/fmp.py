@@ -32,7 +32,7 @@ from .granularity import format_annual_block, format_monthly_block, format_quart
 
 log = logging.getLogger(__name__)
 
-_BASE = "https://financialmodelingprep.com/api"
+_STABLE_BASE = "https://financialmodelingprep.com/stable"
 _STATEMENT_LIMIT = 6
 _QUARTERLY_LIMIT = 8
 _HIST_TIMESERIES = 260
@@ -47,22 +47,39 @@ def _require_api_key() -> str:
 
 
 class _FmpClient:
+    """FMP Stable API 客户端（legacy v3 已停用）。"""
+
     def __init__(self) -> None:
         self.budget = FmpApiBudget()
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "LynchStockMonitor/1.0"})
 
-    def get(self, path: str, params: dict | None = None) -> Any:
+    def get(self, endpoint: str, params: dict | None = None, *, optional: bool = False) -> Any:
         _require_api_key()
         self.budget.check()
-        url = f"{_BASE}/{path.lstrip('/')}"
+        path = endpoint.strip("/")
         q = dict(params or {})
         q["apikey"] = FMP_API_KEY
+        url = f"{_STABLE_BASE}/{path}"
         try:
             resp = self._session.get(url, params=q, timeout=30)
-            resp.raise_for_status()
         except requests.RequestException as exc:
             raise FundamentalsError(f"FMP 请求失败 {path}: {exc}") from exc
+
+        if resp.status_code in (402, 403, 404):
+            if optional:
+                log.debug("FMP optional miss %s (%s): %s", path, resp.status_code, resp.text[:80])
+                self.budget.increment()
+                return []
+            raise FundamentalsError(
+                f"FMP {path} 不可用 (HTTP {resp.status_code}): {resp.text[:200]}"
+            )
+
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            raise FundamentalsError(f"FMP 请求失败 {path}: {exc}") from exc
+
         self.budget.increment()
         if not resp.text or resp.text.strip() in ("", "[]"):
             return []
@@ -133,40 +150,159 @@ def _pct_change(new: float | None, old: float | None) -> float | None:
     return (new - old) / abs(old)
 
 
+def _df_to_fmp_rows(
+    df: pd.DataFrame | None,
+    mapping: dict[str, str],
+) -> list[dict]:
+    """Yahoo 宽表 → FMP 纵向 records（date + fields）。"""
+    if df is None or df.empty:
+        return []
+    rows: list[dict] = []
+    cols = sorted(df.columns, key=lambda c: pd.Timestamp(c))
+    index = {str(i) for i in df.index}
+    for col in cols:
+        row: dict[str, Any] = {"date": pd.Timestamp(col).strftime("%Y-%m-%d")}
+        for src, dst in mapping.items():
+            if src in index:
+                val = df.loc[src, col]
+                if pd.notna(val):
+                    try:
+                        row[dst] = float(val)
+                    except (TypeError, ValueError):
+                        pass
+        if len(row) > 1:
+            rows.append(row)
+    return rows
+
+
+def _yahoo_fill_bundle(sym: str, bundle: dict[str, Any]) -> dict[str, Any]:
+    """免费档部分 ticker 财报/历史价 402 时，用 Yahoo 补齐静态包（仍走本地缓存）。"""
+    need = (
+        not bundle.get("income_annual")
+        or not bundle.get("balance_annual")
+        or not bundle.get("cash_annual")
+        or not bundle.get("historical")
+    )
+    if not need:
+        return bundle
+    log.info("FMP stable 财报受限，Yahoo 回退补齐: %s", sym)
+    from .yahoo import _ticker
+
+    tk = _ticker(sym)
+    try:
+        income = tk.income_stmt
+        balance = tk.balance_sheet
+        cash = tk.cashflow
+        income_q = tk.quarterly_income_stmt
+        balance_q = tk.quarterly_balance_sheet
+    except Exception:  # noqa: BLE001
+        income = balance = cash = income_q = balance_q = None
+
+    inc_map = {
+        "Total Revenue": "revenue",
+        "Operating Revenue": "revenue",
+        "Net Income": "netIncome",
+        "Net Income Common Stockholders": "netIncome",
+        "Gross Profit": "grossProfit",
+        "Diluted EPS": "epsdiluted",
+        "Basic EPS": "eps",
+    }
+    bal_map = {
+        "Inventory": "inventory",
+        "Long Term Debt": "longTermDebt",
+        "Total Debt": "totalDebt",
+        "Stockholders Equity": "totalStockholdersEquity",
+        "Common Stock Equity": "totalStockholdersEquity",
+        "Total Assets": "totalAssets",
+        "Cash And Cash Equivalents": "cashAndCashEquivalents",
+    }
+    cash_map = {
+        "Free Cash Flow": "freeCashFlow",
+        "Operating Cash Flow": "operatingCashFlow",
+        "Capital Expenditure": "capitalExpenditure",
+        "Common Stock Repurchased": "commonStockRepurchased",
+        "Repurchase Of Capital Stock": "commonStockRepurchased",
+        "Common Stock Dividend Paid": "dividendsPaid",
+        "Cash Dividends Paid": "dividendsPaid",
+    }
+
+    if not bundle.get("income_annual"):
+        bundle["income_annual"] = _df_to_fmp_rows(income, inc_map)
+    if not bundle.get("income_quarterly"):
+        bundle["income_quarterly"] = _df_to_fmp_rows(income_q, inc_map)
+    if not bundle.get("balance_annual"):
+        bundle["balance_annual"] = _df_to_fmp_rows(balance, bal_map)
+    if not bundle.get("balance_quarterly"):
+        bundle["balance_quarterly"] = _df_to_fmp_rows(balance_q, bal_map)
+    if not bundle.get("cash_annual"):
+        bundle["cash_annual"] = _df_to_fmp_rows(cash, cash_map)
+
+    if not bundle.get("historical"):
+        try:
+            hist = tk.history(period="2y", interval="1d", auto_adjust=False)
+            col = "Close" if "Close" in hist.columns else "Adj Close"
+            if col in hist.columns:
+                bundle["historical"] = [
+                    {"date": idx.strftime("%Y-%m-%d"), "close": float(val)}
+                    for idx, val in hist[col].dropna().items()
+                ][-_HIST_TIMESERIES:]
+        except Exception:  # noqa: BLE001
+            bundle["historical"] = []
+
+    bundle["statement_source"] = bundle.get("statement_source") or "yahoo_fallback"
+    return bundle
+
+
 def _fetch_static_bundle(ticker: str) -> dict[str, Any]:
-    """拉取并持久化低频静态财报包（仅在新窗口或缺失时调用）。"""
+    """拉取并持久化低频静态财报包（stable API；受限标的 Yahoo 回退）。"""
     sym = correct_ticker(ticker)
-    bundle: dict[str, Any] = {}
-    bundle["profile"] = _first_row(_api().get(f"v3/profile/{sym}"))
+    api = _api()
+    bundle: dict[str, Any] = {
+        "profile": _first_row(api.get("profile", {"symbol": sym})),
+        "statement_source": "fmp_stable",
+    }
+    stmt_params = {"symbol": sym}
     bundle["income_annual"] = _first_list(
-        _api().get(f"v3/income-statement/{sym}", {"period": "annual", "limit": _STATEMENT_LIMIT}),
+        api.get(
+            "income-statement",
+            {**stmt_params, "period": "annual", "limit": _STATEMENT_LIMIT},
+            optional=True,
+        ),
     )
     bundle["income_quarterly"] = _first_list(
-        _api().get(
-            f"v3/income-statement/{sym}",
-            {"period": "quarter", "limit": _QUARTERLY_LIMIT},
+        api.get(
+            "income-statement",
+            {**stmt_params, "period": "quarter", "limit": _QUARTERLY_LIMIT},
+            optional=True,
         ),
     )
     bundle["balance_annual"] = _first_list(
-        _api().get(f"v3/balance-sheet-statement/{sym}", {"period": "annual", "limit": _STATEMENT_LIMIT}),
-    )
-    bundle["cash_annual"] = _first_list(
-        _api().get(f"v3/cash-flow-statement/{sym}", {"period": "annual", "limit": _STATEMENT_LIMIT}),
-    )
-    bundle["balance_quarterly"] = _first_list(
-        _api().get(
-            f"v3/balance-sheet-statement/{sym}",
-            {"period": "quarter", "limit": _QUARTERLY_LIMIT},
+        api.get(
+            "balance-sheet-statement",
+            {**stmt_params, "period": "annual", "limit": _STATEMENT_LIMIT},
+            optional=True,
         ),
     )
-    hist = _api().get(
-        f"v3/historical-price-full/{sym}",
-        {"serietype": "line", "timeseries": _HIST_TIMESERIES},
+    bundle["cash_annual"] = _first_list(
+        api.get(
+            "cash-flow-statement",
+            {**stmt_params, "period": "annual", "limit": _STATEMENT_LIMIT},
+            optional=True,
+        ),
     )
-    if isinstance(hist, dict):
-        bundle["historical"] = hist.get("historical") or []
-    else:
-        bundle["historical"] = []
+    bundle["balance_quarterly"] = _first_list(
+        api.get(
+            "balance-sheet-statement",
+            {**stmt_params, "period": "quarter", "limit": _QUARTERLY_LIMIT},
+            optional=True,
+        ),
+    )
+    hist = _first_list(
+        api.get("historical-price-eod/full", {**stmt_params}, optional=True),
+    )
+    bundle["historical"] = hist[-_HIST_TIMESERIES:] if hist else []
+
+    bundle = _yahoo_fill_bundle(sym, bundle)
     save_static_cache(sym, bundle)
     return bundle
 
@@ -185,45 +321,73 @@ def _get_static_bundle(ticker: str, *, allow_refresh: bool = True) -> dict[str, 
 
 
 def _fetch_quote(ticker: str) -> dict:
-    """实时报价 — 禁止缓存。"""
-    return _first_row(_api().get(f"v3/quote/{correct_ticker(ticker)}"))
+    """实时报价 — 禁止缓存。免费档 quote 受限时回退 profile（含 price/change）。"""
+    sym = correct_ticker(ticker)
+    api = _api()
+    profile = _first_row(api.get("profile", {"symbol": sym}))
+    quote = _first_row(api.get("quote", {"symbol": sym}, optional=True))
+    row: dict[str, Any] = dict(profile)
+    for k, v in quote.items():
+        if v is not None:
+            row[k] = v
+    price = row.get("price")
+    change = row.get("change")
+    if row.get("previousClose") is None and price is not None and change is not None:
+        try:
+            row["previousClose"] = float(price) - float(change)
+        except (TypeError, ValueError):
+            pass
+    return row
 
 
 def _fetch_stock_news(ticker: str, *, limit: int = 5) -> list[dict]:
-    """实时新闻 — 禁止缓存。"""
+    """实时新闻 — 禁止缓存。受限时返回空列表（由 Yahoo 回退拼装）。"""
     sym = correct_ticker(ticker)
-    data = _api().get("v3/stock_news", {"tickers": sym, "limit": limit})
+    data = _api().get("news/stock", {"symbols": sym, "limit": limit}, optional=True)
     return _first_list(data)[:limit]
 
 
 def _fetch_8k_filings(ticker: str, *, limit: int = 5) -> list[dict]:
     """SEC 8-K 披露 — 禁止缓存。"""
     sym = correct_ticker(ticker)
-    data = _api().get(f"v3/sec_filings/{sym}", {"type": "8-K", "page": 0})
-    return _first_list(data)[:limit]
+    data = _first_list(_api().get("sec-filings-8k", {"symbol": sym}, optional=True))
+    matched = [f for f in data if str(f.get("symbol") or "").upper() == sym.upper()]
+    return (matched or data)[:limit]
+
+
+def _yahoo_news_block(ticker: str) -> str:
+    from .yahoo import _fetch_recent_news_block, _ticker
+
+    return _fetch_recent_news_block(_ticker(correct_ticker(ticker)))
 
 
 def _build_sensitive_intel_block(ticker: str) -> str:
-    """高敏黑天鹅天线：新闻 + 8-K，每次运行实时拉取。"""
+    """高敏黑天鹅天线：FMP stable 新闻 + 8-K；新闻受限时 Yahoo 回退。"""
+    sym = correct_ticker(ticker)
     header = "【最新市场舆情监控（过去数日核心头条）】"
     lines = [header]
-    news = _fetch_stock_news(ticker)
-    if not news:
-        lines.append("- （FMP 暂无最新新闻）")
-    else:
+    news = _fetch_stock_news(sym)
+    if news:
         for item in news:
             title = str(item.get("title") or item.get("text") or "").strip()
             pub = str(item.get("site") or item.get("publisher") or "未知").strip()
             if title:
                 lines.append(f"- {title} (来源: {pub})")
+    else:
+        yahoo_block = _yahoo_news_block(sym)
+        if yahoo_block and "无有效标题" not in yahoo_block and "暂无" not in yahoo_block:
+            return yahoo_block
+        lines.append("- （暂无可用新闻 feed）")
 
-    filings = _fetch_8k_filings(ticker)
+    filings = _fetch_8k_filings(sym)
     if filings:
         lines.append("")
         lines.append("【SEC 8-K 重大事件披露（实时，禁止缓存）】")
         for f in filings:
-            title = str(f.get("title") or f.get("type") or "8-K 披露").strip()
-            dt = str(f.get("acceptedDate") or f.get("fillingDate") or f.get("date") or "?")[:10]
+            title = str(f.get("title") or f.get("form") or "8-K 披露").strip()
+            dt = str(
+                f.get("filingDate") or f.get("acceptedDate") or f.get("date") or "?"
+            )[:10]
             lines.append(f"- {title} ({dt})")
 
     return "\n".join(lines)
@@ -431,10 +595,18 @@ def _build_fundamentals_from_bundle(
 
     price = quote.get("price") or profile.get("price")
     pe = quote.get("pe") or profile.get("pe")
-    mcap = quote.get("marketCap") or profile.get("mktCap")
+    mcap = quote.get("marketCap") or profile.get("marketCap") or profile.get("mktCap")
     shares = profile.get("sharesOutstanding") or _latest_annual(
         income_a, "weightedAverageShsOutDil",
-    )
+    ) or _latest_annual(income_a, "weightedAverageShsOut")
+
+    if pe is None and price:
+        eps_ttm = _latest_annual(income_a, "epsdiluted") or _latest_annual(income_a, "eps")
+        if eps_ttm and eps_ttm > 0:
+            try:
+                pe = float(price) / float(eps_ttm)
+            except (TypeError, ValueError):
+                pe = None
 
     total_cash = _latest_annual(balance_a, "cashAndCashEquivalents")
     total_debt = _latest_annual(balance_a, "totalDebt")
@@ -452,6 +624,11 @@ def _build_fundamentals_from_bundle(
             pass
 
     eps_series = _annual_series(income_a, "epsdiluted") or _annual_series(income_a, "eps")
+
+    stmt_src = bundle.get("statement_source") or "fmp_stable"
+    source = "fmp stable (Financial Modeling Prep)"
+    if stmt_src == "yahoo_fallback":
+        source = "fmp stable + yahoo 财报回退"
 
     return Fundamentals(
         ticker=sym,
@@ -484,7 +661,7 @@ def _build_fundamentals_from_bundle(
         shares_outstanding=shares,
         dividend_yield=div_yield,
         held_percent_institutions=None,
-        source="fmp (Financial Modeling Prep)",
+        source=source,
         report_mode=mode,
     )
 
@@ -580,29 +757,22 @@ def _whale_intel(ticker: str) -> tuple[str, str]:
     api = _api()
 
     def fetch_senate():
-        return _first_list(api.get("v4/senate-trading-rss-feed", {"page": 0}))
+        return _first_list(api.get("senate-trades", {"page": 0, "limit": 250}, optional=True))
 
     def fetch_house():
-        for path, params in (
-            ("v4/house-trading-rss-feed", {"page": 0}),
-            ("v4/house-trading", {}),
-        ):
-            try:
-                rows = _first_list(api.get(path, params))
-                if rows:
-                    return rows
-            except FundamentalsError:
-                continue
-        return []
+        return _first_list(api.get("house-trades", {"page": 0, "limit": 250}, optional=True))
 
     def fetch_dates(cik: str):
-        return _first_list(api.get("v4/institutional-ownership/portfolio-date", {"cik": cik}))
+        return _first_list(
+            api.get("institutional-ownership/portfolio-date", {"cik": cik}, optional=True),
+        )
 
     def fetch_portfolio(cik: str, dt: str):
         return _first_list(
             api.get(
-                "v4/institutional-ownership/portfolio-holdings",
+                "institutional-ownership/portfolio-holdings",
                 {"cik": cik, "date": dt, "page": 0},
+                optional=True,
             ),
         )
 
@@ -612,7 +782,7 @@ def _whale_intel(ticker: str) -> tuple[str, str]:
 
 
 class FmpProvider(BaseDataProvider):
-    name = "fmp (Financial Modeling Prep)"
+    name = "fmp stable (Financial Modeling Prep)"
 
     def _fetch_fundamentals(self, ticker: str, *, mode: str = "weekly") -> Fundamentals:
         mode = normalize_mode(mode)

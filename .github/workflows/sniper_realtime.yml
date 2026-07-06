@@ -28,6 +28,7 @@ jobs:
       - name: Run realtime sniper
         env:
           DATA_PROVIDER: ${{ vars.DATA_PROVIDER }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}

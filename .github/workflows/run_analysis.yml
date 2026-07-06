@@ -70,6 +70,8 @@ jobs:
           MAX_UNIVERSE_SCAN: ${{ vars.MAX_UNIVERSE_SCAN }}
           MAX_AI_ANALYSIS_COUNT: ${{ vars.MAX_AI_ANALYSIS_COUNT }}
           AI_SORT_KEY: ${{ vars.AI_SORT_KEY }}
+          MARKET: ${{ vars.MARKET }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           # Gemini（核心推理大脑）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
