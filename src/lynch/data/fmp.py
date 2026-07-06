@@ -811,6 +811,28 @@ def _whale_intel(ticker: str) -> tuple[str, str]:
     return analyze_whale_signals(sym, trades, inst)
 
 
+def _augment_quick_screen_from_cache(q: QuickScreen, bundle: dict) -> QuickScreen:
+    """用已缓存的资产负债表补充净现金比（隐蔽资产通道），不改变轻量 PEG/负债口径。"""
+    if q.net_cash_ratio is not None:
+        return q
+    balance_a = bundle.get("balance_annual") or []
+    profile = bundle.get("profile") or {}
+    if not balance_a:
+        return q
+    price = q.price or profile.get("price")
+    shares = profile.get("sharesOutstanding")
+    cash = _latest_annual(balance_a, "cashAndCashEquivalents")
+    debt = _latest_annual(balance_a, "totalDebt")
+    if cash is None or not shares or not price or price <= 0:
+        return q
+    net_cash_ps = (cash - (debt or 0.0)) / shares
+    return dataclasses.replace(
+        q,
+        net_cash_per_share=net_cash_ps,
+        net_cash_ratio=net_cash_ps / price,
+    )
+
+
 def _light_quick_screen(sym: str) -> QuickScreen | None:
     """漏斗粗筛：profile + ratios-ttm（2–3 次 API），避免冷启动拉全量财报。"""
     api = _api()
@@ -908,59 +930,13 @@ class FmpProvider(BaseDataProvider):
     def get_quick_screen(self, ticker: str) -> QuickScreen | None:
         sym = correct_ticker(ticker)
         try:
+            q = _light_quick_screen(sym)
+            if q is None:
+                return None
             bundle = _get_static_bundle(sym, allow_refresh=False)
-            if not (bundle.get("profile") and bundle.get("income_annual")):
-                return _light_quick_screen(sym)
-            quote = dict(bundle["profile"])
+            return _augment_quick_screen_from_cache(q, bundle)
         except (FundamentalsError, RuntimeError):
             return None
-        if not quote:
-            return None
-
-        profile = bundle.get("profile") or quote
-        balance_a = bundle.get("balance_annual") or []
-        income_a = bundle.get("income_annual") or []
-
-        price = quote.get("price")
-        pe = quote.get("pe")
-        growth = _growth_yoy(income_a, "netIncome")
-        mcap = quote.get("marketCap") or profile.get("marketCap") or profile.get("mktCap")
-        exchange = profile.get("exchangeShortName") or profile.get("exchange")
-
-        cash = _latest_annual(balance_a, "cashAndCashEquivalents")
-        debt = _latest_annual(balance_a, "totalDebt")
-        equity = _latest_annual(balance_a, "totalStockholdersEquity")
-        shares = profile.get("sharesOutstanding")
-
-        quick_peg = None
-        if pe and pe > 0 and growth and growth > 0:
-            quick_peg = pe / (growth * 100)
-
-        net_cash_ps = None
-        net_cash_ratio = None
-        if cash is not None and shares:
-            net_cash_ps = (cash - (debt or 0.0)) / shares
-            if price and price > 0:
-                net_cash_ratio = net_cash_ps / price
-
-        debt_ratio = None
-        if debt is not None and equity and equity > 0:
-            debt_ratio = debt / equity
-
-        return QuickScreen(
-            ticker=sym,
-            name=profile.get("companyName"),
-            price=price,
-            market_cap=mcap,
-            exchange=exchange,
-            sbi_tradable=check_sbi_tradable(sym, exchange=exchange, market_cap=mcap),
-            trailing_pe=pe,
-            growth_yoy=growth,
-            quick_peg=quick_peg,
-            debt_ratio=debt_ratio,
-            net_cash_per_share=net_cash_ps,
-            net_cash_ratio=net_cash_ratio,
-        )
 
     def get_stock_price_change(self, ticker: str, period: str = "5d") -> float | None:
         sym = correct_ticker(ticker)
