@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import dataclasses
 
 from . import config
 from .data.base import BaseDataProvider, Fundamentals, QuickScreen
@@ -23,17 +24,47 @@ def is_hardcore_alpha_candidate(sbi_tradable: bool, signal_order: int | None) ->
 
 
 def _passes_first_funnel(q: QuickScreen) -> bool:
-    """第一层漏斗判定：估值划算 或 隐蔽资产，且负债不超标。"""
-    # 负债超标直接刷掉（有数据才判）
-    if q.debt_ratio is not None and q.debt_ratio > config.FUNNEL_MAX_DEBT_RATIO:
-        return False
-    # 估值划算：PEG 在阈值内
+    """第一层多通道漏斗（Phase 1）：负债门 + (PEG | 周期底部 | 净现金) OR。
+
+    返回前若放行，会把命中通道写回 q.pass_channels（通过 replace 由调用方接收新对象）。
+    本函数只返回 bool；通道标签由 evaluate_first_funnel 附带。
+    """
+    return bool(evaluate_first_funnel(q)[0])
+
+
+def evaluate_first_funnel(q: QuickScreen) -> tuple[bool, QuickScreen]:
+    """判定是否通过第一层；返回 (通过?, 可能打标后的 QuickScreen)。"""
+    # ── 负债门（金融无条件豁免）──
+    if not q.is_financial:
+        if q.debt_ratio is not None and q.debt_ratio > config.FUNNEL_MAX_DEBT_RATIO:
+            return False, q
+
+    channels: list[str] = []
+
+    # 通道 A：粗略股息修正 PEG（快增/通用）
     if q.quick_peg is not None and 0 < q.quick_peg <= config.FUNNEL_MAX_PEG:
-        return True
-    # 隐蔽资产：每股净现金/股价够厚
+        channels.append("peg")
+
+    # 通道 C：周期底部旁路 — 无 PEG/亏损，且存货未堆积（或无存货数据）
+    if q.is_cyclical and (q.quick_peg is None or q.trailing_pe is None or q.trailing_pe <= 0):
+        inv, sales = q.inventory_growth, q.sales_growth
+        inventory_ok = inv is None or sales is None or inv <= sales
+        if inventory_ok:
+            channels.append("cyclical")
+
+    # 通道 B：隐蔽资产（净现金）
     if q.net_cash_ratio is not None and q.net_cash_ratio >= config.FUNNEL_MIN_NETCASH_RATIO:
-        return True
-    return False
+        channels.append("net_cash")
+
+    if not channels:
+        return False, q
+
+    updated = dataclasses.replace(
+        q,
+        pass_channels=tuple(channels),
+        asset_play_hint=("net_cash" in channels) or q.asset_play_hint,
+    )
+    return True, updated
 
 
 def first_funnel(
@@ -47,6 +78,7 @@ def first_funnel(
     survivors: list[QuickScreen] = []
     scanned = 0
     total = len(tickers)
+    channel_hits: dict[str, int] = {"peg": 0, "cyclical": 0, "net_cash": 0}
 
     def _screen(t: str) -> QuickScreen | None:
         try:
@@ -61,10 +93,20 @@ def first_funnel(
             if scanned % 100 == 0:
                 print(f"  …已粗筛 {scanned}/{total}，当前幸存 {len(survivors)}")
             q = fut.result()
-            if q and _passes_first_funnel(q):
-                survivors.append(q)
+            if not q:
+                continue
+            ok, tagged = evaluate_first_funnel(q)
+            if ok:
+                survivors.append(tagged)
+                for ch in tagged.pass_channels:
+                    channel_hits[ch] = channel_hits.get(ch, 0) + 1
 
-    print(f"🕳️  第一层漏斗：{total} → {len(survivors)} 只幸存（刷掉 {total - len(survivors)}）")
+    print(
+        f"🕳️  第一层漏斗：{total} → {len(survivors)} 只幸存（刷掉 {total - len(survivors)}）"
+        f"｜通道 peg={channel_hits.get('peg', 0)} "
+        f"cyclical={channel_hits.get('cyclical', 0)} "
+        f"net_cash={channel_hits.get('net_cash', 0)}"
+    )
     return survivors
 
 

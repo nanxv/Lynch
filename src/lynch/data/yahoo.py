@@ -552,11 +552,26 @@ class YahooFinanceProvider(BaseDataProvider):
         cash = info.get("totalCash")
         debt = info.get("totalDebt")
         shares = info.get("sharesOutstanding")
-        d2e = info.get("debtToEquity")
+        ltd = info.get("longTermDebt")
+        equity = info.get("totalStockholderEquity") or info.get("totalStockholdersEquity")
+        sector = info.get("sector")
+        industry = info.get("industry")
+        from .base import cyclical_from_labels, financial_from_labels
+        from ..temporal import dividend_adjusted_peg
 
-        quick_peg = None
-        if pe and pe > 0 and growth and growth > 0:
-            quick_peg = pe / (growth * 100)
+        fin = financial_from_labels(sector, industry)
+        cyc = cyclical_from_labels(sector, industry)
+
+        div = info.get("dividendYield")
+        div_pct = None
+        if div is not None:
+            try:
+                dv = float(div)
+                div_pct = dv * 100.0 if dv <= 1.0 else dv
+            except (TypeError, ValueError):
+                div_pct = None
+
+        quick_peg = dividend_adjusted_peg(pe, growth, div_pct)
 
         net_cash_ps = None
         net_cash_ratio = None
@@ -564,6 +579,10 @@ class YahooFinanceProvider(BaseDataProvider):
             net_cash_ps = (cash - (debt or 0.0)) / shares
             if price and price > 0:
                 net_cash_ratio = net_cash_ps / price
+
+        debt_ratio = None
+        if not fin and ltd is not None and equity and equity > 0:
+            debt_ratio = ltd / equity
 
         return QuickScreen(
             ticker=ticker.upper(),
@@ -575,9 +594,13 @@ class YahooFinanceProvider(BaseDataProvider):
             trailing_pe=pe,
             growth_yoy=growth,
             quick_peg=quick_peg,
-            debt_ratio=(d2e / 100.0) if d2e is not None else None,
+            debt_ratio=debt_ratio,
             net_cash_per_share=net_cash_ps,
             net_cash_ratio=net_cash_ratio,
+            sector=sector,
+            industry=industry,
+            is_financial=fin,
+            is_cyclical=cyc,
         )
 
     def get_stock_price_change(self, ticker: str, period: str = "5d") -> float | None:

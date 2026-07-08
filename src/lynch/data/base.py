@@ -89,11 +89,21 @@ class QuickScreen:
     sbi_tradable: bool | None = None
     trailing_pe: float | None = None
     growth_yoy: float | None = None
-    quick_peg: float | None = None
-    debt_ratio: float | None = None  # 总债/权益（小数）
+    quick_peg: float | None = None  # 粗略股息修正 PEG（非厂商 PEG TTM）
+    debt_ratio: float | None = None  # 长期负债/股东权益（小数）；金融股可空并豁免
     net_cash_per_share: float | None = None
     net_cash_ratio: float | None = None  # 每股净现金/股价
     is_priority: bool = False  # 是否来自"必看列表"（watchlist）
+
+    # ── Phase 1 多通道漏斗字段 ──
+    sector: str | None = None
+    industry: str | None = None
+    is_financial: bool = False
+    is_cyclical: bool = False
+    inventory_growth: float | None = None  # 存货 YoY（小数）
+    sales_growth: float | None = None  # 营收 YoY（小数）
+    asset_play_hint: bool = False  # 净现金通道放行时打标
+    pass_channels: tuple[str, ...] = ()  # 如 ("peg",) / ("cyclical",) / ("net_cash",)
 
 
 class BaseDataProvider(ABC):
@@ -165,21 +175,31 @@ _CYCLICAL_HINTS = (
 _FINANCIAL_HINTS = ("Bank", "Insurance", "Capital Markets", "Financial", "Mortgage", "Credit")
 
 
+def financial_from_labels(sector: str | None, industry: str | None) -> bool:
+    """金融业（银行/保险等）——负债天生极高，漏斗与排雷均豁免负债门。"""
+    if (sector or "") == "Financial Services":
+        return True
+    ind = industry or ""
+    return any(h in ind for h in _FINANCIAL_HINTS)
+
+
+def cyclical_from_labels(sector: str | None, industry: str | None) -> bool:
+    """周期股粗判——漏斗底部旁路与深度豁免共用。"""
+    if financial_from_labels(sector, industry):
+        return False
+    sec = sector or ""
+    ind = industry or ""
+    return sec in _CYCLICAL_SECTORS or any(h in ind for h in _CYCLICAL_HINTS)
+
+
 def is_financial(f: "Fundamentals") -> bool:
     """金融业（银行/保险等）——负债天生极高，需豁免负债排雷。"""
-    if (f.sector or "") == "Financial Services":
-        return True
-    industry = f.industry or ""
-    return any(h in industry for h in _FINANCIAL_HINTS)
+    return financial_from_labels(f.sector, f.industry)
 
 
 def is_cyclical(f: "Fundamentals") -> bool:
     """周期股——高 P/E/亏损/短期利润暴跌往往是底部，需反向判定、豁免常规排雷。"""
-    if is_financial(f):
-        return False
-    sector = f.sector or ""
-    industry = f.industry or ""
-    return sector in _CYCLICAL_SECTORS or any(h in industry for h in _CYCLICAL_HINTS)
+    return cyclical_from_labels(f.sector, f.industry)
 
 
 def _cagr(series: dict[int, float]) -> float | None:

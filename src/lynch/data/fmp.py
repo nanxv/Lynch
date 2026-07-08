@@ -811,58 +811,246 @@ def _whale_intel(ticker: str) -> tuple[str, str]:
     return analyze_whale_signals(sym, trades, inst)
 
 
+def _cagr_from_total_growth(total: float | None, years: float) -> float | None:
+    """将 N 年累计每股增长还原为近似 CAGR（小数）。"""
+    if total is None or years <= 0:
+        return None
+    try:
+        t = float(total)
+    except (TypeError, ValueError):
+        return None
+    base = 1.0 + t
+    if base <= 0:
+        return None
+    return base ** (1.0 / years) - 1.0
+
+
+def _coarse_growth_from_fg(fg: dict) -> float | None:
+    """优先 5y / 3y 每股净利累计增长 → CAGR；再退回最近一年 eps 增速。"""
+    for key, yrs in (("fiveYNetIncomeGrowthPerShare", 5.0), ("threeYNetIncomeGrowthPerShare", 3.0)):
+        cagr = _cagr_from_total_growth(fg.get(key), yrs)
+        if cagr is not None and cagr > 0:
+            return cagr
+    for key in ("epsdilutedGrowth", "epsgrowth", "netIncomeGrowth"):
+        v = fg.get(key)
+        if v is not None:
+            try:
+                g = float(v)
+            except (TypeError, ValueError):
+                continue
+            if g > 0:
+                return g
+    return None
+
+
+def _div_yield_pct(profile: dict, price: float | None) -> float | None:
+    """股息率（百分比）。优先 lastDiv/price，其次 profile.dividendYield。"""
+    last_div = profile.get("lastDiv")
+    if last_div is not None and price and price > 0:
+        try:
+            return float(last_div) / float(price) * 100.0
+        except (TypeError, ValueError):
+            pass
+    dy = profile.get("dividendYield")
+    if dy is None:
+        return None
+    try:
+        v = float(dy)
+    except (TypeError, ValueError):
+        return None
+    return v * 100.0 if v <= 1.0 else v
+
+
+def _ltd_equity_from_ratios(ratios: dict) -> float | None:
+    """长期负债/资本近似。"""
+    for key in ("longTermDebtToCapitalRatioTTM", "longTermDebtToEquityRatioTTM"):
+        v = ratios.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _fetch_latest_balance(api: _FmpClient, sym: str) -> dict:
+    rows = _first_list(
+        api.get(
+            "balance-sheet-statement",
+            {"symbol": sym, "period": "annual", "limit": 1},
+            optional=True,
+        ),
+    )
+    return rows[0] if rows else {}
+
+
+def _net_cash_from_balance(
+    bal: dict,
+    *,
+    price: float | None,
+    shares: float | None,
+) -> tuple[float | None, float | None]:
+    cash = bal.get("cashAndCashEquivalents")
+    if cash is None:
+        cash = bal.get("cashAndShortTermInvestments")
+    debt = bal.get("totalDebt")
+    sh = shares
+    if cash is None or not sh or sh <= 0:
+        return None, None
+    try:
+        net_ps = (float(cash) - float(debt or 0.0)) / float(sh)
+    except (TypeError, ValueError):
+        return None, None
+    ratio = (net_ps / price) if price and price > 0 else None
+    return net_ps, ratio
+
+
+def _ltd_equity_from_balance(bal: dict) -> float | None:
+    ltd = bal.get("longTermDebt")
+    eq = bal.get("totalStockholdersEquity") or bal.get("totalEquity")
+    if ltd is None or eq is None:
+        return None
+    try:
+        eq_f = float(eq)
+        if eq_f <= 0:
+            return None
+        return float(ltd) / eq_f
+    except (TypeError, ValueError):
+        return None
+
+
 def _augment_quick_screen_from_cache(q: QuickScreen, bundle: dict) -> QuickScreen:
-    """用已缓存的资产负债表补充净现金比（隐蔽资产通道），不改变轻量 PEG/负债口径。"""
-    if q.net_cash_ratio is not None:
-        return q
+    """用已缓存的资产负债表补充净现金 / LTD（不覆盖已有有效值）。"""
     balance_a = bundle.get("balance_annual") or []
     profile = bundle.get("profile") or {}
     if not balance_a:
         return q
+    bal = balance_a[-1] if isinstance(balance_a[-1], dict) else {}
     price = q.price or profile.get("price")
     shares = profile.get("sharesOutstanding")
-    cash = _latest_annual(balance_a, "cashAndCashEquivalents")
-    debt = _latest_annual(balance_a, "totalDebt")
-    if cash is None or not shares or not price or price <= 0:
-        return q
-    net_cash_ps = (cash - (debt or 0.0)) / shares
-    return dataclasses.replace(
-        q,
-        net_cash_per_share=net_cash_ps,
-        net_cash_ratio=net_cash_ps / price,
-    )
+    updates: dict[str, Any] = {}
+    if q.net_cash_ratio is None:
+        net_ps, ratio = _net_cash_from_balance(bal, price=price, shares=shares)
+        if net_ps is not None:
+            updates["net_cash_per_share"] = net_ps
+        if ratio is not None:
+            updates["net_cash_ratio"] = ratio
+    if q.debt_ratio is None and not q.is_financial:
+        ltd = _ltd_equity_from_balance(bal)
+        if ltd is not None:
+            updates["debt_ratio"] = ltd
+    return dataclasses.replace(q, **updates) if updates else q
 
 
 def _light_quick_screen(sym: str) -> QuickScreen | None:
-    """漏斗粗筛：profile + ratios-ttm（2–3 次 API），避免冷启动拉全量财报。"""
+    """漏斗粗筛 Phase1：profile + ratios-ttm + financial-growth；按需拉 balance。
+
+    - quick_peg = 粗略股息修正 PEG（废弃厂商 priceToEarningsGrowthRatioTTM）
+    - debt_ratio = 长期负债/权益（近似）
+    - PEG/周期未放行时再拉 balance 抢救净现金通道
+    """
+    from .. import config
+    from .base import cyclical_from_labels, financial_from_labels
+
     api = _api()
     profile = _first_row(api.get("profile", {"symbol": sym}))
     if not profile:
         return None
     ratios = _first_row(api.get("ratios-ttm", {"symbol": sym}, optional=True)) or {}
     quote = _first_row(api.get("quote", {"symbol": sym}, optional=True)) or {}
+    fg = _first_row(
+        api.get(
+            "financial-growth",
+            {"symbol": sym, "period": "annual", "limit": 1},
+            optional=True,
+        ),
+    ) or {}
 
     price = quote.get("price") or profile.get("price")
+    try:
+        price_f = float(price) if price is not None else None
+    except (TypeError, ValueError):
+        price_f = None
+
     pe = quote.get("pe") or ratios.get("priceToEarningsRatioTTM")
-    quick_peg = ratios.get("priceToEarningsGrowthRatioTTM")
+    try:
+        pe_f = float(pe) if pe is not None else None
+    except (TypeError, ValueError):
+        pe_f = None
+
+    growth = _coarse_growth_from_fg(fg)
+    div_pct = _div_yield_pct(profile, price_f)
+    coarse_peg = dividend_adjusted_peg(pe_f, growth, div_pct)
+
     mcap = quote.get("marketCap") or profile.get("mktCap") or profile.get("marketCap")
     exchange = profile.get("exchangeShortName") or profile.get("exchange")
-    debt_ratio = ratios.get("debtToEquityRatioTTM")
+    sector = profile.get("sector")
+    industry = profile.get("industry")
+    fin = financial_from_labels(sector, industry)
+    cyc = cyclical_from_labels(sector, industry)
+
+    debt_ratio = None if fin else _ltd_equity_from_ratios(ratios)
+
+    inv_g = fg.get("inventoryGrowth")
+    sales_g = fg.get("revenueGrowth")
+    try:
+        inv_f = float(inv_g) if inv_g is not None else None
+    except (TypeError, ValueError):
+        inv_f = None
+    try:
+        sales_f = float(sales_g) if sales_g is not None else None
+    except (TypeError, ValueError):
+        sales_f = None
+
+    shares = profile.get("sharesOutstanding")
+    try:
+        shares_f = float(shares) if shares is not None else None
+    except (TypeError, ValueError):
+        shares_f = None
+
+    peg_ok = coarse_peg is not None and 0 < coarse_peg <= config.FUNNEL_MAX_PEG
+    cyclical_candidate = cyc and (coarse_peg is None or pe_f is None or pe_f <= 0)
+    cyclical_inventory_ok = inv_f is None or sales_f is None or inv_f <= sales_f
+    cyclical_ok = cyclical_candidate and cyclical_inventory_ok
+
+    net_cash_ps = None
+    net_cash_ratio = None
+    if not peg_ok and not cyclical_ok:
+        bal = _fetch_latest_balance(api, sym)
+        if bal:
+            if shares_f is None:
+                # profile 无股本时尝试用 quote；balance 通常无 sharesOutstanding
+                try:
+                    shares_f = float(quote["sharesOutstanding"]) if quote.get("sharesOutstanding") else None
+                except (TypeError, ValueError, KeyError):
+                    shares_f = None
+            net_cash_ps, net_cash_ratio = _net_cash_from_balance(
+                bal, price=price_f, shares=shares_f,
+            )
+            if debt_ratio is None and not fin:
+                debt_ratio = _ltd_equity_from_balance(bal)
 
     return QuickScreen(
         ticker=sym,
         name=profile.get("companyName"),
-        price=price,
+        price=price_f,
         market_cap=mcap,
         exchange=exchange,
         sbi_tradable=check_sbi_tradable(sym, exchange=exchange, market_cap=mcap),
-        trailing_pe=pe,
-        growth_yoy=None,
-        quick_peg=quick_peg,
+        trailing_pe=pe_f,
+        growth_yoy=growth,
+        quick_peg=coarse_peg,
         debt_ratio=debt_ratio,
-        net_cash_per_share=None,
-        net_cash_ratio=None,
+        net_cash_per_share=net_cash_ps,
+        net_cash_ratio=net_cash_ratio,
+        sector=sector,
+        industry=industry,
+        is_financial=fin,
+        is_cyclical=cyc,
+        inventory_growth=inv_f,
+        sales_growth=sales_f,
     )
+
 
 
 class FmpProvider(BaseDataProvider):

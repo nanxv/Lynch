@@ -58,13 +58,15 @@ MAX_UNIVERSE_SCAN = _env_int("MAX_UNIVERSE_SCAN", 1200)
 # 第一层漏斗并发线程数（过高会触发 yfinance 限流/封禁）。
 SCAN_WORKERS = _env_int("SCAN_WORKERS", 8)
 
-# ── 第一层纯代码漏斗阈值（硬指标粗筛）──────────────────────────
-# 通过条件（满足其一即留下，且负债不超标）：
-#   PEG <= FUNNEL_MAX_PEG（估值划算）  或  每股净现金/股价 >= FUNNEL_MIN_NETCASH_RATIO（隐蔽资产）
+# ── 第一层多通道漏斗阈值（Phase 1）──────────────────────────────
+# 负债门：长期负债/股东权益；金融股无条件豁免。
+# 通道 OR（过负债门之后）：
+#   peg       : 粗略股息修正 PEG ∈ (0, FUNNEL_MAX_PEG]
+#   cyclical  : 周期 + (无PEG或亏损) + 存货增速≤销售增速（或无存货数据）
+#   net_cash  : 每股净现金/股价 >= FUNNEL_MIN_NETCASH_RATIO
 FUNNEL_MAX_PEG = _env_float("FUNNEL_MAX_PEG", 1.5)
 FUNNEL_MIN_NETCASH_RATIO = _env_float("FUNNEL_MIN_NETCASH_RATIO", 0.30)
-# 总债/权益（yfinance debtToEquity，百分比换算成小数）上限，超过则刷掉。
-FUNNEL_MAX_DEBT_RATIO = _env_float("FUNNEL_MAX_DEBT_RATIO", 0.50)
+FUNNEL_MAX_DEBT_RATIO = _env_float("FUNNEL_MAX_DEBT_RATIO", 0.33)
 
 # ── 第二层 AI 漏斗：成本熔断 ───────────────────────────────────
 # 每次最多调用 Gemini 做完整"四步叙述与裁决"的公司数量硬上限。
