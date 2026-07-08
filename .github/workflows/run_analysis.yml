@@ -34,7 +34,8 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 全量 us_sbi（约 3500+ 只）粗筛 + FMP 节流后可能超过半小时
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4

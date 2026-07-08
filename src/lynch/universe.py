@@ -1,7 +1,9 @@
 """全市场成分股动态抓取（漏斗顶端）。
 
 来源：
+- us_sbi     : FMP screener · NYSE/NASDAQ/AMEX · 市值≥3亿美元 · 排除 ETF/基金（≈SBI 可直购美股）
 - us         : SEC 官方全美股全量接口（约1万只），配合随机无放回抽样防封
+- us_midcap  : FMP company-screener 美股中小盘（默认 $10亿~$100亿）
 - sp500      : 维基百科 S&P 500 成分股表
 - nasdaq100  : 维基百科 NASDAQ-100 成分股表
 - jpx        : 日本交易所(JPX)官方每月发布的上市公司全量 Excel（固定链接）
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import io
 import random
+import time
 
 import pandas as pd
 import requests
@@ -23,6 +26,9 @@ from .config import (
     MIDCAP_MAX_MARKET_CAP,
     MIDCAP_MIN_MARKET_CAP,
     MIDCAP_SCREEN_LIMIT,
+    SBI_UNIVERSE_EXCHANGES,
+    SBI_UNIVERSE_LIMIT,
+    SBI_UNIVERSE_MIN_MARKET_CAP,
     UNIVERSE_SOURCES,
     US_MARKET_SAMPLE_SIZE,
     correct_ticker,
@@ -146,8 +152,69 @@ def _us_midcap() -> list[str]:
     return out
 
 
+def _us_sbi() -> list[str]:
+    """≈SBI/NISA 可直购美股：主板 + 市值≥门槛，排除 ETF/基金/OTC 风格代码。
+
+    与 metrics.check_sbi_tradable 对齐的启发式；非券商实时可交易名单。
+    """
+    if not FMP_API_KEY:
+        raise RuntimeError("us_sbi 需要 FMP_API_KEY")
+    out: list[str] = []
+    seen: set[str] = set()
+    page_size = 1000
+    for exchange in SBI_UNIVERSE_EXCHANGES:
+        page = 0
+        while len(out) < SBI_UNIVERSE_LIMIT:
+            params = {
+                "marketCapMoreThan": SBI_UNIVERSE_MIN_MARKET_CAP,
+                "isActivelyTrading": "true",
+                "exchange": exchange,
+                "limit": page_size,
+                "page": page,
+                "apikey": FMP_API_KEY,
+            }
+            resp = requests.get(
+                "https://financialmodelingprep.com/stable/company-screener",
+                params=params,
+                headers=_HEADERS,
+                timeout=_TIMEOUT,
+            )
+            if resp.status_code == 429:
+                time.sleep(5)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, list) or not data:
+                break
+            for row in data:
+                if row.get("isEtf") or row.get("isFund"):
+                    continue
+                t = str(row.get("symbol") or "").strip().upper()
+                if not t or t in seen:
+                    continue
+                # 常规普通股：允许 BRK-B 类；排除带点的复杂代码 / 5 位 F·Y OTC ADR
+                if not t.replace("-", "").isalnum():
+                    continue
+                if "." in t:
+                    continue
+                if len(t) == 5 and t.endswith(("F", "Y")):
+                    continue
+                seen.add(t)
+                out.append(t)
+                if len(out) >= SBI_UNIVERSE_LIMIT:
+                    break
+            if len(data) < page_size:
+                break
+            page += 1
+            if page > 40:
+                break
+            time.sleep(0.22)
+    return out
+
+
 _FETCHERS = {
     "us": _us_sec,
+    "us_sbi": _us_sbi,
     "us_midcap": _us_midcap,
     "sp500": _sp500,
     "nasdaq100": _nasdaq100,
@@ -177,7 +244,7 @@ def get_universe(
     for src in sources:
         fetch = _FETCHERS.get(src)
         if fetch is None:
-            print(f"⚠️  未知的成分股来源: {src}（可选 us/us_midcap/sp500/nasdaq100/jpx），跳过。")
+            print(f"⚠️  未知的成分股来源: {src}（可选 us_sbi/us/us_midcap/sp500/nasdaq100/jpx），跳过。")
             continue
         try:
             tickers = fetch()

@@ -42,6 +42,7 @@ TICKER_CORRECTIONS: dict[str, str] = {
 
 # ── 全市场海选（漏斗顶端）───────────────────────────────────────
 # 成分股来源：
+#   us_sbi     : FMP screener · NYSE/NASDAQ/AMEX · 市值≥3亿美元 · 排除 ETF/基金（≈SBI 可直购美股）
 #   us         : SEC 官方全美股全量（约1万只，配合随机抽样）
 #   us_midcap  : FMP company-screener 美股市值 $10亿~$100亿（林奇中小盘猎场）
 #   sp500      : 维基 S&P 500
@@ -49,17 +50,25 @@ TICKER_CORRECTIONS: dict[str, str] = {
 #   jpx        : 日股全量（约4000只，较慢，需显式开启）
 UNIVERSE_SOURCES = [
     s.strip().lower()
-    for s in _env_str("UNIVERSE_SOURCES", "sp500,nasdaq100,us_midcap").split(",")
+    for s in _env_str("UNIVERSE_SOURCES", "us_sbi").split(",")
     if s.strip()
-] or ["sp500", "nasdaq100", "us_midcap"]
+] or ["us_sbi"]
 # 全美股（us 源）每次运行随机无放回抽样的数量。
 US_MARKET_SAMPLE_SIZE = _env_int("US_MARKET_SAMPLE_SIZE", 500)
 # 中小盘 screener：市值下限/上限（美元）、单次拉取上限。
 MIDCAP_MIN_MARKET_CAP = _env_int("MIDCAP_MIN_MARKET_CAP", 1_000_000_000)
 MIDCAP_MAX_MARKET_CAP = _env_int("MIDCAP_MAX_MARKET_CAP", 10_000_000_000)
 MIDCAP_SCREEN_LIMIT = _env_int("MIDCAP_SCREEN_LIMIT", 3000)
-# 单次最多扫描多少只（防超时）。Phase 2 默认扩到 3500。
-MAX_UNIVERSE_SCAN = _env_int("MAX_UNIVERSE_SCAN", 3500)
+# SBI 可买美股池：与 metrics.check_sbi_tradable 市值门槛对齐（默认 $3亿）。
+SBI_UNIVERSE_MIN_MARKET_CAP = _env_int("SBI_UNIVERSE_MIN_MARKET_CAP", 300_000_000)
+SBI_UNIVERSE_EXCHANGES = [
+    s.strip().upper()
+    for s in _env_str("SBI_UNIVERSE_EXCHANGES", "NYSE,NASDAQ,AMEX").split(",")
+    if s.strip()
+] or ["NYSE", "NASDAQ", "AMEX"]
+SBI_UNIVERSE_LIMIT = _env_int("SBI_UNIVERSE_LIMIT", 10000)
+# 单次最多扫描多少只（防超时）。SBI 全池默认不截断（0=不截断）。
+MAX_UNIVERSE_SCAN = _env_int("MAX_UNIVERSE_SCAN", 0)
 # 第一层漏斗并发线程数。
 SCAN_WORKERS = _env_int("SCAN_WORKERS", 8)
 
