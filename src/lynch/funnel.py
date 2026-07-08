@@ -23,46 +23,117 @@ def is_hardcore_alpha_candidate(sbi_tradable: bool, signal_order: int | None) ->
     return signal_order <= 2  # 强烈买入 / 观察仓 / 钝感持有
 
 
-def _passes_first_funnel(q: QuickScreen) -> bool:
-    """第一层多通道漏斗（Phase 1）：负债门 + (PEG | 周期底部 | 净现金) OR。
+def _debt_ok(q: QuickScreen, max_ratio: float) -> bool:
+    """负债门：金融豁免；缺数据不拦截；否则 LTD/E ≤ 上限。"""
+    if q.is_financial:
+        return True
+    if q.debt_ratio is None:
+        return True
+    return q.debt_ratio <= max_ratio
 
-    返回前若放行，会把命中通道写回 q.pass_channels（通过 replace 由调用方接收新对象）。
-    本函数只返回 bool；通道标签由 evaluate_first_funnel 附带。
-    """
+
+def _div_sustainable(q: QuickScreen) -> bool:
+    """粗略分红可持续：FCF>0 或 payout < 上限。"""
+    if q.fcf_positive is True:
+        return True
+    if q.payout_ratio is not None and q.payout_ratio < config.FUNNEL_MAX_PAYOUT_RATIO:
+        return True
+    return False
+
+
+def _passes_first_funnel(q: QuickScreen) -> bool:
+    """第一层多通道漏斗：负债分通道 + (PEG | 周期 | 净现金 | 稳增 | 慢增股息 | 困境) OR。"""
     return bool(evaluate_first_funnel(q)[0])
 
 
 def evaluate_first_funnel(q: QuickScreen) -> tuple[bool, QuickScreen]:
-    """判定是否通过第一层；返回 (通过?, 可能打标后的 QuickScreen)。"""
-    # ── 负债门（金融无条件豁免）──
-    if not q.is_financial:
-        if q.debt_ratio is not None and q.debt_ratio > config.FUNNEL_MAX_DEBT_RATIO:
-            return False, q
+    """判定是否通过第一层；返回 (通过?, 可能打标后的 QuickScreen)。
 
+    通道：
+      A peg — 严格负债 + 粗略股息修正 PEG
+      B net_cash — 严格负债（金融豁免）+ 净现金/股价
+      C cyclical — 周期 + 无有效 PEG/亏损 + 存货未堆
+      D stalwart — 非快增非周期、盈利；PE≤5y均×折扣(可配) + 稳增负债上限；
+                   或稳增股息旁路（股息≥STALWART_MIN + 可持续）
+      E slow_div — 慢增/低增速；股息≥4% + 可持续
+      F turnaround — 利润衰退 + 债缩或净现金升
+    """
     channels: list[str] = []
+    strict_debt = _debt_ok(q, config.FUNNEL_MAX_DEBT_RATIO)
+    stalwart_debt = _debt_ok(q, config.FUNNEL_STALWART_MAX_DEBT_RATIO)
 
-    # 通道 A：粗略股息修正 PEG（快增/通用）
-    if q.quick_peg is not None and 0 < q.quick_peg <= config.FUNNEL_MAX_PEG:
+    # 通道 A：粗略股息修正 PEG（快增/通用）——严格负债
+    if strict_debt and q.quick_peg is not None and 0 < q.quick_peg <= config.FUNNEL_MAX_PEG:
         channels.append("peg")
 
-    # 通道 C：周期底部旁路 — 无 PEG/亏损，且存货未堆积（或无存货数据）
+    # 通道 C：周期底部旁路
     if q.is_cyclical and (q.quick_peg is None or q.trailing_pe is None or q.trailing_pe <= 0):
         inv, sales = q.inventory_growth, q.sales_growth
         inventory_ok = inv is None or sales is None or inv <= sales
         if inventory_ok:
             channels.append("cyclical")
 
-    # 通道 B：隐蔽资产（净现金）
-    if q.net_cash_ratio is not None and q.net_cash_ratio >= config.FUNNEL_MIN_NETCASH_RATIO:
+    # 通道 B：隐蔽资产（净现金）——打 asset_play_hint，不改主类
+    if strict_debt and q.net_cash_ratio is not None and q.net_cash_ratio >= config.FUNNEL_MIN_NETCASH_RATIO:
         channels.append("net_cash")
+
+    # 通道 D：稳增型错杀旁路（P2-3）
+    # 非快速增长主类、非周期、非亏损；PE≤5y均×折扣（或更宽的 PE_VS_AVG_MAX）；稳增负债上限
+    is_fast = q.coarse_class == "快速增长型"
+    profitable = q.trailing_pe is not None and q.trailing_pe > 0
+    pe_cap_mult = config.FUNNEL_STALWART_PE_VS_AVG_MAX  # 漏斗入口可宽于原书 0.85（见 FUNNEL_STALWART_PE_DISCOUNT）
+    if (
+        stalwart_debt
+        and profitable
+        and not q.is_cyclical
+        and not is_fast
+        and q.pe_5y_avg is not None
+        and q.pe_5y_avg > 0
+        and q.trailing_pe is not None
+        and q.trailing_pe <= q.pe_5y_avg * pe_cap_mult
+    ):
+        channels.append("stalwart")
+    # 稳增股息旁路：达不到慢增 4%，但股息尚可 + 可持续（救 KO/PG 类当前估值）
+    elif (
+        stalwart_debt
+        and not q.is_cyclical
+        and not is_fast
+        and q.dividend_yield is not None
+        and q.dividend_yield >= config.FUNNEL_STALWART_MIN_DIV_YIELD
+        and _div_sustainable(q)
+        and profitable
+    ):
+        channels.append("stalwart")
+
+    # 通道 E：缓慢增长型股息旁路（P2-4）
+    slowish = q.coarse_class == "缓慢增长型" or (
+        q.growth_yoy is not None and q.growth_yoy < 0.08
+    ) or (q.growth_yoy is None and q.coarse_class in (None, "稳定增长型", "缓慢增长型"))
+    if (
+        stalwart_debt
+        and slowish
+        and not q.is_cyclical
+        and q.dividend_yield is not None
+        and q.dividend_yield >= config.FUNNEL_MIN_DIV_YIELD
+        and _div_sustainable(q)
+    ):
+        channels.append("slow_div")
+
+    # 通道 F：困境反转型趋势初筛（P2-5）
+    earning_down = (q.growth_yoy is not None and q.growth_yoy < 0) or q.coarse_class == "困境反转型"
+    ltd_shrinking = q.ltd_yoy is not None and q.ltd_yoy <= config.FUNNEL_TURNAROUND_LTD_YOY
+    cash_rising = q.net_cash_yoy is not None and q.net_cash_yoy > 0
+    if earning_down and (ltd_shrinking or cash_rising):
+        channels.append("turnaround")
 
     if not channels:
         return False, q
 
     updated = dataclasses.replace(
         q,
-        pass_channels=tuple(channels),
+        pass_channels=tuple(dict.fromkeys(channels)),  # 保序去重
         asset_play_hint=("net_cash" in channels) or q.asset_play_hint,
+        turnaround_hint=("turnaround" in channels) or q.turnaround_hint,
     )
     return True, updated
 
@@ -78,7 +149,14 @@ def first_funnel(
     survivors: list[QuickScreen] = []
     scanned = 0
     total = len(tickers)
-    channel_hits: dict[str, int] = {"peg": 0, "cyclical": 0, "net_cash": 0}
+    channel_hits: dict[str, int] = {
+        "peg": 0,
+        "cyclical": 0,
+        "net_cash": 0,
+        "stalwart": 0,
+        "slow_div": 0,
+        "turnaround": 0,
+    }
 
     def _screen(t: str) -> QuickScreen | None:
         try:
@@ -105,7 +183,10 @@ def first_funnel(
         f"🕳️  第一层漏斗：{total} → {len(survivors)} 只幸存（刷掉 {total - len(survivors)}）"
         f"｜通道 peg={channel_hits.get('peg', 0)} "
         f"cyclical={channel_hits.get('cyclical', 0)} "
-        f"net_cash={channel_hits.get('net_cash', 0)}"
+        f"net_cash={channel_hits.get('net_cash', 0)} "
+        f"stalwart={channel_hits.get('stalwart', 0)} "
+        f"slow_div={channel_hits.get('slow_div', 0)} "
+        f"turnaround={channel_hits.get('turnaround', 0)}"
     )
     return survivors
 

@@ -884,6 +884,16 @@ def _fetch_latest_balance(api: _FmpClient, sym: str) -> dict:
     return rows[0] if rows else {}
 
 
+def _fetch_balances(api: _FmpClient, sym: str, *, limit: int = 2) -> list[dict]:
+    return _first_list(
+        api.get(
+            "balance-sheet-statement",
+            {"symbol": sym, "period": "annual", "limit": limit},
+            optional=True,
+        ),
+    )
+
+
 def _net_cash_from_balance(
     bal: dict,
     *,
@@ -919,6 +929,128 @@ def _ltd_equity_from_balance(bal: dict) -> float | None:
         return None
 
 
+def _net_cash_abs(bal: dict) -> float | None:
+    cash = bal.get("cashAndCashEquivalents")
+    if cash is None:
+        cash = bal.get("cashAndShortTermInvestments")
+    debt = bal.get("totalDebt")
+    if cash is None:
+        return None
+    try:
+        return float(cash) - float(debt or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _yoy_change(cur: float | None, prev: float | None) -> float | None:
+    if cur is None or prev is None:
+        return None
+    try:
+        c, p = float(cur), float(prev)
+    except (TypeError, ValueError):
+        return None
+    if p == 0:
+        return None
+    return (c - p) / abs(p)
+
+
+def _pe_5y_avg_from_ratios(api: _FmpClient, sym: str) -> tuple[float | None, float | None, float | None, float | None]:
+    """年报 ratios：返回 (pe_5y_avg, latest_annual_pe, payout, dividend_yield%)。"""
+    rows = _first_list(
+        api.get(
+            "ratios",
+            {"symbol": sym, "period": "annual", "limit": 6},
+            optional=True,
+        ),
+    )
+    if not rows:
+        return None, None, None, None
+    pes: list[float] = []
+    for r in rows:
+        v = r.get("priceToEarningsRatio")
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if fv > 0:
+            pes.append(fv)
+    pe_avg = sum(pes[:5]) / len(pes[:5]) if pes else None
+    latest_pe = pes[0] if pes else None
+    payout = None
+    div_pct = None
+    try:
+        if rows[0].get("dividendPayoutRatio") is not None:
+            payout = float(rows[0]["dividendPayoutRatio"])
+    except (TypeError, ValueError, KeyError):
+        payout = None
+    try:
+        if rows[0].get("dividendYieldPercentage") is not None:
+            div_pct = float(rows[0]["dividendYieldPercentage"])
+    except (TypeError, ValueError, KeyError):
+        div_pct = None
+    return pe_avg, latest_pe, payout, div_pct
+
+
+def _enrich_phase2_fields(
+    api: _FmpClient,
+    sym: str,
+    q: QuickScreen,
+    *,
+    need_stalwart: bool,
+    need_slow: bool,
+    need_turnaround: bool,
+) -> QuickScreen:
+    """按需拉取年报 ratios / FCF / 两年 balance，填充 D/E/F 通道字段。"""
+    updates: dict[str, Any] = {}
+
+    if need_stalwart or need_slow:
+        pe_avg, latest_pe, payout, div_pct = _pe_5y_avg_from_ratios(api, sym)
+        if pe_avg is not None:
+            updates["pe_5y_avg"] = pe_avg
+        if latest_pe is not None and q.trailing_pe is None:
+            updates["trailing_pe"] = latest_pe
+        if payout is not None:
+            updates["payout_ratio"] = payout
+        if div_pct is not None and q.dividend_yield is None:
+            updates["dividend_yield"] = div_pct
+
+        cf = _first_row(
+            api.get(
+                "cash-flow-statement",
+                {"symbol": sym, "period": "annual", "limit": 1},
+                optional=True,
+            ),
+        )
+        if cf and cf.get("freeCashFlow") is not None:
+            try:
+                updates["fcf_positive"] = float(cf["freeCashFlow"]) > 0
+            except (TypeError, ValueError):
+                pass
+
+    if need_turnaround or (need_stalwart and q.debt_ratio is None):
+        bals = _fetch_balances(api, sym, limit=2)
+        if bals:
+            if q.debt_ratio is None and not q.is_financial:
+                ltd = _ltd_equity_from_balance(bals[0])
+                if ltd is not None:
+                    updates["debt_ratio"] = ltd
+            if len(bals) >= 2:
+                try:
+                    ltd0 = float(bals[0]["longTermDebt"]) if bals[0].get("longTermDebt") is not None else None
+                    ltd1 = float(bals[1]["longTermDebt"]) if bals[1].get("longTermDebt") is not None else None
+                    updates["ltd_yoy"] = _yoy_change(ltd0, ltd1)
+                except (TypeError, ValueError, KeyError):
+                    pass
+                nc0 = _net_cash_abs(bals[0])
+                nc1 = _net_cash_abs(bals[1])
+                if nc0 is not None and nc1 is not None:
+                    updates["net_cash_yoy"] = 1.0 if nc0 > nc1 else (-1.0 if nc0 < nc1 else 0.0)
+
+    return dataclasses.replace(q, **updates) if updates else q
+
+
 def _augment_quick_screen_from_cache(q: QuickScreen, bundle: dict) -> QuickScreen:
     """用已缓存的资产负债表补充净现金 / LTD（不覆盖已有有效值）。"""
     balance_a = bundle.get("balance_annual") or []
@@ -943,14 +1075,13 @@ def _augment_quick_screen_from_cache(q: QuickScreen, bundle: dict) -> QuickScree
 
 
 def _light_quick_screen(sym: str) -> QuickScreen | None:
-    """漏斗粗筛 Phase1：profile + ratios-ttm + financial-growth；按需拉 balance。
-
-    - quick_peg = 粗略股息修正 PEG（废弃厂商 priceToEarningsGrowthRatioTTM）
-    - debt_ratio = 长期负债/权益（近似）
-    - PEG/周期未放行时再拉 balance 抢救净现金通道
-    """
+    """漏斗粗筛 Phase1+2：轻量核心字段，再按需 enrich D/E/F。"""
     from .. import config
-    from .base import cyclical_from_labels, financial_from_labels
+    from .base import (
+        coarse_classify_from_labels,
+        cyclical_from_labels,
+        financial_from_labels,
+    )
 
     api = _api()
     profile = _first_row(api.get("profile", {"symbol": sym}))
@@ -979,7 +1110,25 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
         pe_f = None
 
     growth = _coarse_growth_from_fg(fg)
+    # 近期增速（含负）供困境判定：优先一年 EPS
+    earn_growth = None
+    for key in ("epsdilutedGrowth", "epsgrowth", "netIncomeGrowth"):
+        if fg.get(key) is not None:
+            try:
+                earn_growth = float(fg[key])
+                break
+            except (TypeError, ValueError):
+                pass
+
     div_pct = _div_yield_pct(profile, price_f)
+    if div_pct is None:
+        try:
+            dy = ratios.get("dividendYieldPercentage")
+            if dy is not None:
+                div_pct = float(dy)
+        except (TypeError, ValueError):
+            pass
+
     coarse_peg = dividend_adjusted_peg(pe_f, growth, div_pct)
 
     mcap = quote.get("marketCap") or profile.get("mktCap") or profile.get("marketCap")
@@ -1008,6 +1157,21 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
     except (TypeError, ValueError):
         shares_f = None
 
+    # 粗分类用长期 CAGR（稳增/快增分带）；近期负增长才触发困境反转候选
+    ltd_abs = None
+    class_growth = growth if growth is not None else earn_growth
+    if earn_growth is not None and earn_growth < 0:
+        ltd_abs = 1.0  # 占位，通道 F enrich 再拉两年表
+        class_growth = earn_growth
+
+    coarse = coarse_classify_from_labels(
+        sector=sector,
+        industry=industry,
+        growth=class_growth,
+        dividend_yield_pct=div_pct,
+        long_term_debt=ltd_abs,
+    )
+
     peg_ok = coarse_peg is not None and 0 < coarse_peg <= config.FUNNEL_MAX_PEG
     cyclical_candidate = cyc and (coarse_peg is None or pe_f is None or pe_f <= 0)
     cyclical_inventory_ok = inv_f is None or sales_f is None or inv_f <= sales_f
@@ -1019,7 +1183,6 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
         bal = _fetch_latest_balance(api, sym)
         if bal:
             if shares_f is None:
-                # profile 无股本时尝试用 quote；balance 通常无 sharesOutstanding
                 try:
                     shares_f = float(quote["sharesOutstanding"]) if quote.get("sharesOutstanding") else None
                 except (TypeError, ValueError, KeyError):
@@ -1030,7 +1193,7 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
             if debt_ratio is None and not fin:
                 debt_ratio = _ltd_equity_from_balance(bal)
 
-    return QuickScreen(
+    q = QuickScreen(
         ticker=sym,
         name=profile.get("companyName"),
         price=price_f,
@@ -1038,7 +1201,7 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
         exchange=exchange,
         sbi_tradable=check_sbi_tradable(sym, exchange=exchange, market_cap=mcap),
         trailing_pe=pe_f,
-        growth_yoy=growth,
+        growth_yoy=earn_growth if earn_growth is not None else growth,
         quick_peg=coarse_peg,
         debt_ratio=debt_ratio,
         net_cash_per_share=net_cash_ps,
@@ -1049,7 +1212,41 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
         is_cyclical=cyc,
         inventory_growth=inv_f,
         sales_growth=sales_f,
+        dividend_yield=div_pct,
+        coarse_class=coarse,
     )
+
+    # Phase 2 按需 enrich：PEG/周期/净现金都未过时再拉稳增/慢增/困境字段
+    net_ok = net_cash_ratio is not None and net_cash_ratio >= config.FUNNEL_MIN_NETCASH_RATIO
+    if peg_ok or cyclical_ok or net_ok:
+        return q
+
+    need_turnaround = (earn_growth is not None and earn_growth < 0) or coarse == "困境反转型"
+    need_stalwart = coarse in ("稳定增长型", "缓慢增长型") or (
+        not cyc and not fin and (growth is None or growth < 0.20) and pe_f is not None and pe_f > 0
+    )
+    need_slow = (div_pct is not None and div_pct >= config.FUNNEL_STALWART_MIN_DIV_YIELD) or coarse == "缓慢增长型"
+
+    if need_stalwart or need_slow or need_turnaround:
+        q = _enrich_phase2_fields(
+            api, sym, q,
+            need_stalwart=need_stalwart or need_slow,
+            need_slow=need_slow,
+            need_turnaround=need_turnaround,
+        )
+        # 困境：短期负增才改主类；勿用一年增速覆盖长期 CAGR 分带（否则 KO 等被误标快增）
+        if earn_growth is not None and earn_growth < 0:
+            q = dataclasses.replace(
+                q,
+                coarse_class=coarse_classify_from_labels(
+                    sector=q.sector,
+                    industry=q.industry,
+                    growth=earn_growth,
+                    dividend_yield_pct=q.dividend_yield,
+                    long_term_debt=1.0,
+                ),
+            )
+    return q
 
 
 

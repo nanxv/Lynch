@@ -18,7 +18,11 @@ import pandas as pd
 import requests
 
 from .config import (
+    FMP_API_KEY,
     MAX_UNIVERSE_SCAN,
+    MIDCAP_MAX_MARKET_CAP,
+    MIDCAP_MIN_MARKET_CAP,
+    MIDCAP_SCREEN_LIMIT,
     UNIVERSE_SOURCES,
     US_MARKET_SAMPLE_SIZE,
     correct_ticker,
@@ -93,7 +97,62 @@ def _jpx() -> list[str]:
     return out
 
 
-_FETCHERS = {"us": _us_sec, "sp500": _sp500, "nasdaq100": _nasdaq100, "jpx": _jpx}
+def _us_midcap() -> list[str]:
+    """FMP company-screener：美股中小盘（默认市值 $10亿~$100亿）— 林奇猎场扩容。"""
+    if not FMP_API_KEY:
+        raise RuntimeError("us_midcap 需要 FMP_API_KEY")
+    # 分页：FMP limit 上限常见为单次返回条数；多页拉满 MIDCAP_SCREEN_LIMIT
+    out: list[str] = []
+    seen: set[str] = set()
+    page = 0
+    page_size = min(1000, MIDCAP_SCREEN_LIMIT)
+    while len(out) < MIDCAP_SCREEN_LIMIT:
+        params = {
+            "marketCapMoreThan": MIDCAP_MIN_MARKET_CAP,
+            "marketCapLowerThan": MIDCAP_MAX_MARKET_CAP,
+            "isActivelyTrading": "true",
+            "limit": page_size,
+            "page": page,
+            "apikey": FMP_API_KEY,
+        }
+        resp = requests.get(
+            "https://financialmodelingprep.com/stable/company-screener",
+            params=params,
+            headers=_HEADERS,
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            break
+        for row in data:
+            t = str(row.get("symbol") or "").strip().upper()
+            if not t or t in seen:
+                continue
+            # 过滤非普通股代码（含 - . /）
+            if not t.replace("-", "").replace(".", "").isalnum():
+                continue
+            if "." in t and not t.endswith(".T"):
+                continue
+            seen.add(t)
+            out.append(t)
+            if len(out) >= MIDCAP_SCREEN_LIMIT:
+                break
+        if len(data) < page_size:
+            break
+        page += 1
+        if page > 20:
+            break
+    return out
+
+
+_FETCHERS = {
+    "us": _us_sec,
+    "us_midcap": _us_midcap,
+    "sp500": _sp500,
+    "nasdaq100": _nasdaq100,
+    "jpx": _jpx,
+}
 
 
 def get_universe(
@@ -118,7 +177,7 @@ def get_universe(
     for src in sources:
         fetch = _FETCHERS.get(src)
         if fetch is None:
-            print(f"⚠️  未知的成分股来源: {src}（可选 us/sp500/nasdaq100/jpx），跳过。")
+            print(f"⚠️  未知的成分股来源: {src}（可选 us/us_midcap/sp500/nasdaq100/jpx），跳过。")
             continue
         try:
             tickers = fetch()

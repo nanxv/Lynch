@@ -95,7 +95,7 @@ class QuickScreen:
     net_cash_ratio: float | None = None  # 每股净现金/股价
     is_priority: bool = False  # 是否来自"必看列表"（watchlist）
 
-    # ── Phase 1 多通道漏斗字段 ──
+    # ── Phase 1/2 多通道漏斗字段 ──
     sector: str | None = None
     industry: str | None = None
     is_financial: bool = False
@@ -103,7 +103,17 @@ class QuickScreen:
     inventory_growth: float | None = None  # 存货 YoY（小数）
     sales_growth: float | None = None  # 营收 YoY（小数）
     asset_play_hint: bool = False  # 净现金通道放行时打标
-    pass_channels: tuple[str, ...] = ()  # 如 ("peg",) / ("cyclical",) / ("net_cash",)
+    pass_channels: tuple[str, ...] = ()  # peg / cyclical / net_cash / stalwart / slow_div / turnaround
+
+    dividend_yield: float | None = None  # 百分比
+    pe_5y_avg: float | None = None
+    payout_ratio: float | None = None  # 小数 0~1+
+    fcf_positive: bool | None = None
+    ltd_yoy: float | None = None  # 长期债同比（小数）
+    net_cash_yoy: float | None = None  # 净现金同比（相对变化）
+    coarse_class: str | None = None  # 粗分类主类（不含隐蔽资产主类）
+    turnaround_hint: bool = False
+
 
 
 class BaseDataProvider(ABC):
@@ -214,27 +224,45 @@ def _cagr(series: dict[int, float]) -> float | None:
 
 
 def classify_company(f: Fundamentals) -> str:
-    """基于代码规则给出林奇六大类的初步判定（LLM 会在周报里做权威复核）。"""
+    """林奇六大类粗分：周期 > 困境反转 > 增速带（快/慢/稳）；隐蔽资产仅作附加提示不抢主类。
+
+    LLM 周报会做权威复核。净现金厚 → 调用方可用 asset_play_hint，不再覆盖主类。
+    """
     growth = _cagr(f.eps_series)
     if growth is None:
         growth = f.earnings_growth_yoy
     div = f.dividend_yield or 0.0  # 已是百分比
 
-    net_cash_ratio = None
-    if f.total_cash is not None and f.shares_outstanding and f.price and f.price > 0:
-        net_cash = f.total_cash - (f.total_debt or 0.0)
-        net_cash_ratio = (net_cash / f.shares_outstanding) / f.price
+    # 1) 周期型：硬行业字典最高优先级
+    if cyclical_from_labels(f.sector, f.industry):
+        return "周期型"
 
-    industry = f.industry or ""
-    sector = f.sector or ""
-    is_cyclical = sector in _CYCLICAL_SECTORS or any(h in industry for h in _CYCLICAL_HINTS)
-
-    if net_cash_ratio is not None and net_cash_ratio >= 0.30:
-        return "隐蔽资产型"
+    # 2) 困境反转型：利润衰退且仍有长期债压顶（趋势细筛在漏斗通道 F）
     if growth is not None and growth < 0 and (f.long_term_debt or 0) > 0:
         return "困境反转型"
-    if is_cyclical:
+
+    # 3) 按增速 / 股息切带
+    if growth is not None and growth >= 0.20:
+        return "快速增长型"
+    if div >= 4.0 and (growth is None or growth < 0.08):
+        return "缓慢增长型"
+    return "稳定增长型"
+
+
+def coarse_classify_from_labels(
+    *,
+    sector: str | None,
+    industry: str | None,
+    growth: float | None,
+    dividend_yield_pct: float | None,
+    long_term_debt: float | None = None,
+) -> str:
+    """漏斗轻量粗分类（与 classify_company 同优先级，不依赖完整 Fundamentals）。"""
+    if cyclical_from_labels(sector, industry):
         return "周期型"
+    if growth is not None and growth < 0 and (long_term_debt or 0) > 0:
+        return "困境反转型"
+    div = dividend_yield_pct or 0.0
     if growth is not None and growth >= 0.20:
         return "快速增长型"
     if div >= 4.0 and (growth is None or growth < 0.08):

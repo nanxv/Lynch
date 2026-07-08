@@ -42,31 +42,43 @@ TICKER_CORRECTIONS: dict[str, str] = {
 
 # ── 全市场海选（漏斗顶端）───────────────────────────────────────
 # 成分股来源：
-#   us         : SEC 官方全美股全量（约1万只，配合随机抽样，默认）
+#   us         : SEC 官方全美股全量（约1万只，配合随机抽样）
+#   us_midcap  : FMP company-screener 美股市值 $10亿~$100亿（林奇中小盘猎场）
 #   sp500      : 维基 S&P 500
 #   nasdaq100  : 维基 NASDAQ-100
 #   jpx        : 日股全量（约4000只，较慢，需显式开启）
 UNIVERSE_SOURCES = [
     s.strip().lower()
-    for s in _env_str("UNIVERSE_SOURCES", "us").split(",")
+    for s in _env_str("UNIVERSE_SOURCES", "sp500,nasdaq100,us_midcap").split(",")
     if s.strip()
-] or ["us"]
-# 全美股（us 源）每次运行随机无放回抽样的数量：既防 yfinance 被封，又能一周内轮动扫遍全市场。
+] or ["sp500", "nasdaq100", "us_midcap"]
+# 全美股（us 源）每次运行随机无放回抽样的数量。
 US_MARKET_SAMPLE_SIZE = _env_int("US_MARKET_SAMPLE_SIZE", 500)
-# 单次最多扫描多少只（防止 GitHub Actions 超时 / yfinance 被封）。
-MAX_UNIVERSE_SCAN = _env_int("MAX_UNIVERSE_SCAN", 1200)
-# 第一层漏斗并发线程数（过高会触发 yfinance 限流/封禁）。
+# 中小盘 screener：市值下限/上限（美元）、单次拉取上限。
+MIDCAP_MIN_MARKET_CAP = _env_int("MIDCAP_MIN_MARKET_CAP", 1_000_000_000)
+MIDCAP_MAX_MARKET_CAP = _env_int("MIDCAP_MAX_MARKET_CAP", 10_000_000_000)
+MIDCAP_SCREEN_LIMIT = _env_int("MIDCAP_SCREEN_LIMIT", 3000)
+# 单次最多扫描多少只（防超时）。Phase 2 默认扩到 3500。
+MAX_UNIVERSE_SCAN = _env_int("MAX_UNIVERSE_SCAN", 3500)
+# 第一层漏斗并发线程数。
 SCAN_WORKERS = _env_int("SCAN_WORKERS", 8)
 
-# ── 第一层多通道漏斗阈值（Phase 1）──────────────────────────────
+# ── 第一层多通道漏斗阈值（Phase 1 + Phase 2）────────────────────
 # 负债门：长期负债/股东权益；金融股无条件豁免。
-# 通道 OR（过负债门之后）：
-#   peg       : 粗略股息修正 PEG ∈ (0, FUNNEL_MAX_PEG]
-#   cyclical  : 周期 + (无PEG或亏损) + 存货增速≤销售增速（或无存货数据）
-#   net_cash  : 每股净现金/股价 >= FUNNEL_MIN_NETCASH_RATIO
+# 通道 OR：peg | cyclical | net_cash | stalwart | slow_div | turnaround
 FUNNEL_MAX_PEG = _env_float("FUNNEL_MAX_PEG", 1.5)
 FUNNEL_MIN_NETCASH_RATIO = _env_float("FUNNEL_MIN_NETCASH_RATIO", 0.30)
 FUNNEL_MAX_DEBT_RATIO = _env_float("FUNNEL_MAX_DEBT_RATIO", 0.33)
+# 稳增/慢增通道可用更宽负债上限（长期债/权益）；快增 PEG 通道仍用 0.33
+FUNNEL_STALWART_MAX_DEBT_RATIO = _env_float("FUNNEL_STALWART_MAX_DEBT_RATIO", 1.50)
+FUNNEL_STALWART_PE_DISCOUNT = _env_float("FUNNEL_STALWART_PE_DISCOUNT", 0.85)
+# 稳增错杀：当前 P/E 相对 5y 均 P/E 的倍数上限；默认 1.0（≤历史均即可进漏斗，0.85 更严）
+FUNNEL_STALWART_PE_VS_AVG_MAX = _env_float("FUNNEL_STALWART_PE_VS_AVG_MAX", 1.0)
+FUNNEL_MIN_DIV_YIELD = _env_float("FUNNEL_MIN_DIV_YIELD", 4.0)
+# 稳增股息旁路（慢增达不到 4% 时）：股息% + 分红可持续 + 非快增周期
+FUNNEL_STALWART_MIN_DIV_YIELD = _env_float("FUNNEL_STALWART_MIN_DIV_YIELD", 2.0)
+FUNNEL_MAX_PAYOUT_RATIO = _env_float("FUNNEL_MAX_PAYOUT_RATIO", 0.80)
+FUNNEL_TURNAROUND_LTD_YOY = _env_float("FUNNEL_TURNAROUND_LTD_YOY", -0.10)
 
 # ── 第二层 AI 漏斗：成本熔断 ───────────────────────────────────
 # 每次最多调用 Gemini 做完整"四步叙述与裁决"的公司数量硬上限。
