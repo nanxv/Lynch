@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import dataclasses
 
 from . import config
+from .cyclical import cyclical_dio_fatal, cyclical_top_warning, cyclical_watch, passes_cyclical_funnel
 from .data.base import BaseDataProvider, Fundamentals, QuickScreen
 from .metrics import LynchMetrics, check_sbi_tradable, check_sbi_tradable_fundamentals
 from .sniper import is_sniper_candidate
@@ -62,16 +63,18 @@ def evaluate_first_funnel(q: QuickScreen) -> tuple[bool, QuickScreen]:
     strict_debt = _debt_ok(q, config.FUNNEL_MAX_DEBT_RATIO)
     stalwart_debt = _debt_ok(q, config.FUNNEL_STALWART_MAX_DEBT_RATIO)
 
-    # 通道 A：粗略股息修正 PEG（快增/通用）——严格负债
-    if strict_debt and q.quick_peg is not None and 0 < q.quick_peg <= config.FUNNEL_MAX_PEG:
+    # 通道 A：粗略股息修正 PEG（快增/通用）——严格负债；周期股不走 PEG（底部走 C，顶部低 PEG 是陷阱）
+    if (
+        strict_debt
+        and not q.is_cyclical
+        and q.quick_peg is not None
+        and 0 < q.quick_peg <= config.FUNNEL_MAX_PEG
+    ):
         channels.append("peg")
 
-    # 通道 C：周期底部旁路
-    if q.is_cyclical and (q.quick_peg is None or q.trailing_pe is None or q.trailing_pe <= 0):
-        inv, sales = q.inventory_growth, q.sales_growth
-        inventory_ok = inv is None or sales is None or inv <= sales
-        if inventory_ok:
-            channels.append("cyclical")
+    # 通道 C：周期底部旁路（林奇分相：排除顶部陷阱，要求利润难看+存货未堆）
+    if passes_cyclical_funnel(q):
+        channels.append("cyclical")
 
     # 通道 B：隐蔽资产（净现金）——打 asset_play_hint，不改主类
     if strict_debt and q.net_cash_ratio is not None and q.net_cash_ratio >= config.FUNNEL_MIN_NETCASH_RATIO:
@@ -235,28 +238,6 @@ def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple
     return False, ""
 
 
-def cyclical_watch(f: Fundamentals, m: LynchMetrics) -> str | None:
-    """判定周期股是否处于「行业低谷观察期」。返回一句观察理由，否则 None。
-
-    对周期股而言，亏损/高 P/E/长期利润下滑/短期利润暴跌都被豁免了常规排雷，
-    但它们不该凭空消失——反而正是需要盯着行业库存拐点的潜在底部买点，单列展示。
-    """
-    if not m.is_cyclical:
-        return None
-    signals: list[str] = []
-    if f.trailing_pe is None:
-        signals.append("当前亏损/无有效P/E")
-    elif f.trailing_pe > 30:
-        signals.append(f"P/E高达{f.trailing_pe:.0f}")
-    if m.growth_rate is not None and m.growth_rate < 0:
-        signals.append("长期利润下滑")
-    if f.earnings_growth_yoy is not None and f.earnings_growth_yoy <= -0.30:
-        signals.append(f"短期利润暴跌{f.earnings_growth_yoy:.0%}")
-    if not signals:
-        return None
-    return "；".join(signals) + " → 疑似周期底部，盯行业渠道/库存拐点，勿当红灯"
-
-
 def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
     """提取"故事变坏"的致命量化红灯。空列表表示暂无硬伤。
 
@@ -299,6 +280,11 @@ def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
             reasons.append(f"盈利同比暴跌{f.earnings_growth_yoy:.0%}")
         elif m.growth_rate is not None and m.growth_rate < 0:
             reasons.append("长期盈利增长转负")
+
+    # 4) 周期股 DIO 熔断：利润高位 + 存货周转天数拉长（隐性库存顶）
+    dio_fatal = cyclical_dio_fatal(f, m)
+    if dio_fatal:
+        reasons.append(dio_fatal)
 
     return reasons
 

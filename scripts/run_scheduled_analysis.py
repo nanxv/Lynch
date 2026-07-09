@@ -47,6 +47,7 @@ from src.lynch.data.base import QuickScreen  # noqa: E402
 from src.lynch.fundamentals import FundamentalsError  # noqa: E402
 from src.lynch.funnel import (  # noqa: E402
     check_daily_sniper_trigger,
+    cyclical_top_warning,
     cyclical_watch,
     fatal_warnings,
     first_funnel,
@@ -167,7 +168,22 @@ def _flag_line(a: LynchAnalysis) -> str:
         icon = _FLAG_ICON.get(m.flag, "⚪")
         val = "N/A" if m.value is None else m.value
         parts.append(f"{icon}{m.label.split(' ')[0]}={val}")
-    return " · ".join(parts)
+    line = " · ".join(parts)
+    if a.metrics.is_cyclical:
+        dio_tail, pe_anchor = notify.cyclical_briefing_extras(a.fundamentals)
+        line = notify.append_cyclical_detail_tail(
+            line, dio_tail=dio_tail, industry_pe_anchor=pe_anchor,
+        )
+    return line
+
+
+def _enrich_cyclical_reason(a: LynchAnalysis, reason: str) -> str:
+    if not a.metrics.is_cyclical:
+        return reason
+    dio_tail, pe_anchor = notify.cyclical_briefing_extras(a.fundamentals)
+    return notify.append_cyclical_detail_tail(
+        reason, dio_tail=dio_tail, industry_pe_anchor=pe_anchor,
+    )
 
 
 def _render_daily(a: LynchAnalysis, change_5d: float | None, priority: bool) -> str:
@@ -304,6 +320,7 @@ def main() -> int:
     reds: list[tuple[str, str, list[str]]] = []
     recs: list[tuple[str, str, float | None, str]] = []
     cycs: list[tuple[str, str, str]] = []
+    cyc_tops: list[tuple[str, str, str]] = []
 
     for seq, q in enumerate(working):
         name = watch.get(q.ticker, (q.name or q.ticker, "", "watch"))[0]
@@ -340,14 +357,43 @@ def main() -> int:
 
             fw = fatal_warnings(a.fundamentals, a.metrics)
             if fw:
-                reds.append((q.ticker, display_name, fw, a.metrics.company_type))
+                display_fw = list(fw)
+                if a.metrics.is_cyclical:
+                    dio_tail, pe_anchor = notify.cyclical_briefing_extras(a.fundamentals)
+                    if dio_tail:
+                        display_fw.append(dio_tail)
+                    if pe_anchor:
+                        display_fw.append(pe_anchor)
+                reds.append((
+                    q.ticker,
+                    display_name,
+                    display_fw,
+                    a.metrics.company_type,
+                ))
             ok, reason = is_quality_pick(a.fundamentals, a.metrics, fw)
             if ok:
-                recs.append((q.ticker, display_name, a.metrics.peg, reason, a.metrics.company_type))
+                recs.append((
+                    q.ticker,
+                    display_name,
+                    a.metrics.peg,
+                    _enrich_cyclical_reason(a, reason),
+                    a.metrics.company_type,
+                ))
             if not fw:
                 cyc = cyclical_watch(a.fundamentals, a.metrics)
                 if cyc:
-                    cycs.append((q.ticker, display_name, cyc))
+                    cycs.append((
+                        q.ticker,
+                        display_name,
+                        _enrich_cyclical_reason(a, cyc),
+                    ))
+            top = cyclical_top_warning(a.fundamentals, a.metrics)
+            if top:
+                cyc_tops.append((
+                    q.ticker,
+                    display_name,
+                    _enrich_cyclical_reason(a, top),
+                ))
 
             if ai_mode:
                 peg = a.metrics.peg
@@ -431,6 +477,8 @@ def main() -> int:
         tags.append(f"🔴{len(reds)}只排雷")
     if cycs:
         tags.append(f"🌀{len(cycs)}只周期")
+    if cyc_tops:
+        tags.append(f"⚠️{len(cyc_tops)}只周期顶")
     if tags:
         subject += "（" + "·".join(tags) + "）"
 
@@ -438,6 +486,7 @@ def main() -> int:
         recs=recs,
         reds=reds,
         cycs=cycs,
+        cyc_tops=cyc_tops,
         verdicts=verdicts,
         ai_count=counts["ai"],
         ai_mode=ai_mode,

@@ -38,6 +38,14 @@ _STATEMENT_LIMIT = 6
 _QUARTERLY_LIMIT = 8
 _HIST_TIMESERIES = 260
 
+# 林奇铁律：禁止宏观叙事污染——以下端点不得接入流水线（仅企业微观 + 行业同业数据）
+_MACRO_ENDPOINTS_BANNED = frozenset({
+    "economic-indicators",
+    "economic-calendar",
+    "treasury-rates",
+    "market-risk-premium",
+})
+
 
 def _require_api_key() -> str:
     if not FMP_API_KEY:
@@ -64,6 +72,11 @@ class _FmpClient:
     def get(self, endpoint: str, params: dict | None = None, *, optional: bool = False) -> Any:
         _require_api_key()
         path = endpoint.strip("/")
+        root = path.split("/")[0]
+        if root in _MACRO_ENDPOINTS_BANNED:
+            raise FundamentalsError(
+                f"FMP 宏观端点 `{path}` 被禁止接入（林奇铁律：不预测宏观，仅用微观企业/行业数据）。"
+            )
         q = dict(params or {})
         q["apikey"] = FMP_API_KEY
         url = f"{_STABLE_BASE}/{path}"
@@ -690,6 +703,75 @@ def _build_fundamentals_from_bundle(
     )
 
 
+def _dio_series_from_key_metrics(rows: list[dict]) -> tuple[dict[int, float], float | None]:
+    """从 key-metrics 年报提取 DIO 序列与最近两期变化率（正=天数拉长/恶化）。"""
+    series: dict[int, float] = {}
+    for row in rows:
+        fy = row.get("fiscalYear")
+        dio = row.get("daysOfInventoryOutstanding")
+        if fy is None or dio is None:
+            continue
+        try:
+            fy_i = int(str(fy)[:4])
+            dio_f = float(dio)
+        except (TypeError, ValueError):
+            continue
+        if dio_f > 0:
+            series[fy_i] = dio_f
+    if len(series) < 2:
+        return series, None
+    years = sorted(series)
+    prev, cur = series[years[-2]], series[years[-1]]
+    if prev == 0:
+        return series, None
+    return series, (cur - prev) / abs(prev)
+
+
+def _industry_pe_from_snapshot(rows: list[dict], industry: str | None) -> float | None:
+    """industry-pe-snapshot：按公司 industry 字段匹配同业平均 P/E。"""
+    if not industry or not rows:
+        return None
+    target = industry.strip().lower()
+    for row in rows:
+        ind = str(row.get("industry") or "").strip().lower()
+        if ind != target:
+            continue
+        pe = row.get("pe")
+        if pe is None:
+            continue
+        try:
+            return float(pe)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _fetch_cyclical_micro_metrics(sym: str, industry: str | None) -> dict[str, Any]:
+    """周期股微观探针：DIO 序列 + 行业 P/E（禁止宏观端点）。"""
+    api = _api()
+    km_rows = _first_list(
+        api.get(
+            "key-metrics",
+            {"symbol": sym, "period": "annual", "limit": 5},
+            optional=True,
+        ),
+    )
+    dio_series, dio_yoy = _dio_series_from_key_metrics(km_rows)
+    ind_rows = _first_list(
+        api.get(
+            "industry-pe-snapshot",
+            {"date": date.today().isoformat()},
+            optional=True,
+        ),
+    )
+    industry_pe = _industry_pe_from_snapshot(ind_rows, industry)
+    return {
+        "dio_series": dio_series,
+        "dio_yoy": dio_yoy,
+        "industry_pe": industry_pe,
+    }
+
+
 def _finalize_fmp(
     f: Fundamentals,
     bundle: dict[str, Any],
@@ -737,6 +819,18 @@ def _finalize_fmp(
                 temporal["valuation_pe"] = pe_at_price(anchor_px, eps)
 
     f = dataclasses.replace(f, **{k: v for k, v in temporal.items() if k in Fundamentals.__dataclass_fields__})
+
+    # 周期股微观探针（DIO + 行业 P/E）；不拉宏观数据
+    try:
+        micro = _fetch_cyclical_micro_metrics(f.ticker, f.industry)
+        f = dataclasses.replace(
+            f,
+            dio_series=micro.get("dio_series") or {},
+            dio_yoy=micro.get("dio_yoy"),
+            industry_pe=micro.get("industry_pe"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("周期微观探针跳过 %s: %s", f.ticker, exc)
 
     blocks: list[str] = []
     if mode == "monthly":

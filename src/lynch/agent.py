@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import knowledge, llm
+from .cyclical import cyclical_data_block_lines
 from .data import Fundamentals, get_provider
 from .data.base import BaseDataProvider
 from .metrics import LynchMetrics, compute_metrics
@@ -125,6 +126,10 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     div_str = f"{f.dividend_yield:.2f}%" if f.dividend_yield else "无/缺失"
     lines.append(f"股息率: {div_str} | 机构持股: {_fmt(f.held_percent_institutions, pct=True)}")
     lines.append("")
+    cyc_lines = cyclical_data_block_lines(f, m)
+    if cyc_lines:
+        lines.extend(cyc_lines)
+        lines.append("")
     lines.append("— 林奇量化排雷（已算好，请直接引用）—")
     for metric in m.metrics:
         icon = _FLAG_ICON.get(metric.flag, "⚪")

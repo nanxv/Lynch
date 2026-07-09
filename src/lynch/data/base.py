@@ -69,6 +69,11 @@ class Fundamentals:
     pe_5y_min: float | None = None
     pe_5y_avg: float | None = None
 
+    # ── 周期股微观探针（纯企业/行业数据；禁止宏观接口）──
+    dio_series: dict[int, float] = field(default_factory=dict)  # 财年 → 存货周转天数
+    dio_yoy: float | None = None  # 最近两期 DIO 变化率（正=天数拉长/恶化）
+    industry_pe: float | None = None  # 同业 P/E 快照（industry-pe-snapshot）
+
     # ── 舆情安全网（实时新闻 + 8-K，禁止缓存）──
     recent_news_block: str = ""
 

@@ -89,6 +89,19 @@ FUNNEL_STALWART_MIN_DIV_YIELD = _env_float("FUNNEL_STALWART_MIN_DIV_YIELD", 2.0)
 FUNNEL_MAX_PAYOUT_RATIO = _env_float("FUNNEL_MAX_PAYOUT_RATIO", 0.80)
 FUNNEL_TURNAROUND_LTD_YOY = _env_float("FUNNEL_TURNAROUND_LTD_YOY", -0.10)
 
+# ── 周期股分相（林奇反直觉法则）────────────────────────────────
+# 底部信号：P/E 高于此值视为「利润难看」；顶部陷阱：P/E 低于此且盈利强劲
+CYCLICAL_PE_DISTRESS = _env_float("CYCLICAL_PE_DISTRESS", 30.0)
+CYCLICAL_PE_TRAP_MAX = _env_float("CYCLICAL_PE_TRAP_MAX", 15.0)
+CYCLICAL_EARNINGS_STRONG = _env_float("CYCLICAL_EARNINGS_STRONG", 0.15)  # 盈利同比 ≥15%
+CYCLICAL_INV_GAP_TOP = _env_float("CYCLICAL_INV_GAP_TOP", 0.05)  # 存货增速领先销售 ≥5pp
+CYCLICAL_INV_SALES_MULT = _env_float("CYCLICAL_INV_SALES_MULT", 2.0)  # 或存货增速 > 销售×2
+CYCLICAL_PE_VS_5Y_TRAP = _env_float("CYCLICAL_PE_VS_5Y_TRAP", 0.85)  # P/E ≤ 5y均×此值
+CYCLICAL_TRAP_PEG_MAX = _env_float("CYCLICAL_TRAP_PEG_MAX", 0.8)  # 低PEG+存货堆
+CYCLICAL_PEAK_TOLERANCE = _env_float("CYCLICAL_PEAK_TOLERANCE", 0.05)  # 净利≈近年最高
+# DIO（存货周转天数）近期拉长超过此比例 → 周期见顶隐性库存红灯
+CYCLICAL_DIO_WORSEN_THRESHOLD = _env_float("CYCLICAL_DIO_WORSEN_THRESHOLD", 0.15)
+
 # ── 第二层 AI 漏斗：成本熔断 ───────────────────────────────────
 # 每次最多调用 Gemini 做完整"四步叙述与裁决"的公司数量硬上限。
 MAX_AI_ANALYSIS_COUNT = _env_int("MAX_AI_ANALYSIS_COUNT", 30)

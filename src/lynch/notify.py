@@ -87,6 +87,30 @@ def format_ticker_with_category(
     return f"{ticker} {name}{tag}"
 
 
+def append_cyclical_detail_tail(
+    text: str,
+    *,
+    dio_tail: str = "",
+    industry_pe_anchor: str = "",
+) -> str:
+    """周期股简报行：附加 DIO 趋势尾巴与行业 P/E 锚点。"""
+    extras: list[str] = []
+    if dio_tail:
+        extras.append(dio_tail)
+    if industry_pe_anchor:
+        extras.append(f"({industry_pe_anchor})")
+    if not extras:
+        return text
+    return f"{text} {' '.join(extras)}"
+
+
+def cyclical_briefing_extras(f) -> tuple[str, str]:
+    """从 Fundamentals 提取周期股简报附加字段 (dio_tail, industry_pe_anchor)。"""
+    from .cyclical import format_dio_trend_tail, format_industry_pe_anchor
+
+    return format_dio_trend_tail(f), format_industry_pe_anchor(f)
+
+
 def _render_verdict_groups(
     verdicts: list[tuple],
     *,
@@ -172,6 +196,21 @@ def render_recommend_block(recs: list[tuple]) -> str:
     return "\n".join(lines)
 
 
+def render_cyclical_top_block(tops: list[tuple[str, str, str]]) -> str:
+    """「⚠️ 周期型公司 - 顶部陷阱」板块。"""
+    if not tops:
+        return ""
+    lines = [f"> ## ⚠️ 周期型公司 · 顶部陷阱（{len(tops)}只）", ">"]
+    for ticker, name, reason in tops:
+        lines.append(f"> - <b style=\"color:#c0392b\">⚠️ {ticker}｜{name}</b>：{reason}")
+    lines.append(">")
+    lines.append("> *林奇铁律：周期股在财报最漂亮、P/E 最低时往往是顶部；存货堆积时更要远离。*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
     """「🌀 周期型公司 - 行业低谷观察期」板块。"""
     if not cycs:
@@ -192,6 +231,7 @@ def render_briefing_summary(
     recs: list[tuple],
     reds: list[tuple],
     cycs: list[tuple[str, str, str]],
+    cyc_tops: list[tuple[str, str, str]] | None = None,
     verdicts: list[tuple],
     ai_count: int,
     ai_mode: bool,
@@ -206,6 +246,7 @@ def render_briefing_summary(
         ai_count=ai_count,
         show_when_empty=ai_mode and ai_count > 0,
     ))
+    parts.append(render_cyclical_top_block(cyc_tops or []))
     parts.append(render_cyclical_block(cycs))
     return "".join(parts)
 
