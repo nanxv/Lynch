@@ -13,7 +13,13 @@ import dataclasses
 from . import config
 from .cyclical import cyclical_dio_fatal, cyclical_top_warning, cyclical_watch, passes_cyclical_funnel
 from .data.base import BaseDataProvider, Fundamentals, QuickScreen
-from .metrics import LynchMetrics, check_sbi_tradable, check_sbi_tradable_fundamentals
+from .metrics import (
+    LynchMetrics,
+    check_sbi_tradable,
+    check_sbi_tradable_fundamentals,
+    growth_stall_detector,
+    stalwart_pe_exhaustion_warning,
+)
 from .sniper import is_sniper_candidate
 
 
@@ -208,16 +214,22 @@ def rank_and_cap(
 ) -> tuple[list[QuickScreen], list[QuickScreen]]:
     """按配置口径排序，返回 (送 AI 的前 N 只, 降级为仅硬指标的其余)。
 
-    is_priority=True（必看列表）永远进 AI 组且排在最前，不占用/受限于 max_count 之外的名额。
+    is_held=True：影子持仓绝对特权，永远排第一且永不因 max_count 被截断。
+    is_priority=True（必看列表）：永远进 AI 组，不占用 max_count 名额。
     """
     max_count = config.MAX_AI_ANALYSIS_COUNT if max_count is None else max_count
-    priority = [q for q in survivors if q.is_priority]
-    rest = sorted((q for q in survivors if not q.is_priority), key=_sort_key)
+    held = [q for q in survivors if q.is_held]
+    priority = [q for q in survivors if q.is_priority and not q.is_held]
+    rest = sorted(
+        (q for q in survivors if not q.is_priority and not q.is_held),
+        key=_sort_key,
+    )
 
-    ai_group = priority + rest
-    if len(ai_group) <= max_count:
-        return ai_group, []
-    return ai_group[:max_count], ai_group[max_count:]
+    reserved = len(held) + len(priority)
+    slots_for_rest = max(0, max_count - reserved)
+    ai_rest = rest[:slots_for_rest]
+    data_only = rest[slots_for_rest:]
+    return held + priority + ai_rest, data_only
 
 
 def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple[bool, str]:
@@ -238,7 +250,12 @@ def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple
     return False, ""
 
 
-def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
+def fatal_warnings(
+    f: Fundamentals,
+    m: LynchMetrics,
+    *,
+    user_status: str = "watch",
+) -> list[str]:
     """提取"故事变坏"的致命量化红灯。空列表表示暂无硬伤。
 
     豁免规则：
@@ -285,6 +302,16 @@ def fatal_warnings(f: Fundamentals, m: LynchMetrics) -> list[str]:
     dio_fatal = cyclical_dio_fatal(f, m)
     if dio_fatal:
         reasons.append(dio_fatal)
+
+    from .watchlist import normalize_user_status
+
+    if normalize_user_status(user_status) == "held":
+        stall = growth_stall_detector(f, m)
+        if stall:
+            reasons.append(f"🚨 连续两季失速：{stall}")
+        exhaust = stalwart_pe_exhaustion_warning(f, m)
+        if exhaust:
+            reasons.append(f"🚨 P/E严重透支：{exhaust}")
 
     return reasons
 

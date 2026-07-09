@@ -187,6 +187,20 @@ def _pct_change(new: float | None, old: float | None) -> float | None:
     return (new - old) / abs(old)
 
 
+def _quarterly_yoy_list(income_q: list[dict], field: str) -> tuple[float, ...]:
+    """按季度标签排序，计算同比 YoY 序列（需至少 5 个季度点）。"""
+    series = _quarter_series(income_q, field)
+    periods = sorted(series.keys())
+    yoys: list[float] = []
+    for i, p in enumerate(periods):
+        if i < 4:
+            continue
+        yoy = _pct_change(series[p], series[periods[i - 4]])
+        if yoy is not None:
+            yoys.append(yoy)
+    return tuple(yoys)
+
+
 def _df_to_fmp_rows(
     df: pd.DataFrame | None,
     mapping: dict[str, str],
@@ -831,6 +845,15 @@ def _finalize_fmp(
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("周期微观探针跳过 %s: %s", f.ticker, exc)
+
+    earn_yoy = _quarterly_yoy_list(income_q, "netIncome")
+    rev_yoy = _quarterly_yoy_list(income_q, "revenue")
+    if earn_yoy or rev_yoy:
+        f = dataclasses.replace(
+            f,
+            quarterly_earnings_yoy=earn_yoy,
+            quarterly_revenue_yoy=rev_yoy,
+        )
 
     blocks: list[str] = []
     if mode == "monthly":

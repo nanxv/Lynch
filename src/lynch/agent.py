@@ -8,7 +8,7 @@ from . import knowledge, llm
 from .cyclical import cyclical_data_block_lines
 from .data import Fundamentals, get_provider
 from .data.base import BaseDataProvider
-from .metrics import LynchMetrics, compute_metrics
+from .metrics import LynchMetrics, compute_metrics, held_discipline_prompt_append, pe_vs_5y_ratio
 from .prompt import SYSTEM_PROMPT
 from .watchlist import normalize_user_status
 
@@ -111,6 +111,19 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     lines.append(f"长期增长率(PEG分子用): {growth_str}  (口径: {m.growth_basis})")
     lines.append("PEG 口径: 股息修正版 = P/E ÷ (长期CAGR% + 股息率%)，增速>50%按35%封顶")
     lines.append(f"营收同比: {_fmt(f.revenue_growth_yoy, pct=True)} | 盈利同比: {_fmt(f.earnings_growth_yoy, pct=True)}")
+    qy = f.quarterly_earnings_yoy or f.quarterly_revenue_yoy
+    if qy:
+        basis = "净利润" if f.quarterly_earnings_yoy else "营收"
+        seq = " → ".join(f"{y * 100:.1f}%" for y in qy[-4:])
+        lines.append(f"季度{basis}同比(YoY)近四季: {seq}")
+    if m.company_type == "稳定增长型":
+        ratio = pe_vs_5y_ratio(f)
+        if ratio is not None and f.pe_5y_avg is not None:
+            pe = f.spot_pe or f.trailing_pe
+            lines.append(
+                f"稳增估值锚：当前 P/E 为 5 年历史均值的 {ratio:.2f} 倍"
+                f"（当前 {pe:.1f} / 5年均 {f.pe_5y_avg:.1f}）"
+            )
     lines.append("")
     lines.append("— 多年财报序列 —")
     lines.append(f"营业收入: {_series_str(f.revenue_series, currency=cur)}")
@@ -165,6 +178,10 @@ def analyze_company(
         status = normalize_user_status(user_status)
         task_content = llm.build_task_prompt(report_mode, status)
         story = f"\n\n{story_diff_context}" if story_diff_context.strip() else ""
+        discipline = held_discipline_prompt_append(
+            f, m, user_status=status, report_mode=report_mode,
+        )
+        discipline_block = f"\n\n{discipline}" if discipline else ""
         ref = ""
         try:
             query = f"{m.company_type} {f.sector or ''} {f.industry or ''} {f.name or f.ticker} 如何估值与买卖决策"
@@ -174,7 +191,7 @@ def analyze_company(
         except Exception:  # noqa: BLE001
             ref = ""
         user_content = (
-            f"{task_content}\n\n"
+            f"{task_content}{discipline_block}\n\n"
             f"请按系统设定四步结构分析下面这家公司。\n\n"
             f"{data_block}{note}{story}{ref}\n\n"
             "请严格引用上面的真实数字，并在最末尾单独一行给出唯一的【行动指令】。"

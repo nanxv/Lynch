@@ -82,7 +82,7 @@ from src.lynch.market_calendar import (  # noqa: E402
     should_run_daily_report,
 )
 from src.lynch.universe import get_universe  # noqa: E402
-from src.lynch.watchlist import list_avoided_tickers  # noqa: E402
+from src.lynch.watchlist import list_avoided_tickers, normalize_user_status  # noqa: E402
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 
@@ -111,19 +111,42 @@ def _market_filter(tickers: list[str], market: str) -> list[str]:
     return tickers
 
 
-def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tuple[str, str]], dict]:
+def _watch_qs(ticker: str, name: str, user_status: str, **kwargs) -> QuickScreen:
+    """从 watchlist 条目构造 QuickScreen，含 held 绝对特权标记。"""
+    held = user_status == "held"
+    return QuickScreen(
+        ticker=ticker,
+        name=name,
+        is_priority=True,
+        is_held=held,
+        user_status=user_status,
+        **kwargs,
+    )
+
+
+def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tuple[str, str, str]], dict]:
     """返回 (待分析 QuickScreen 列表, 必看信息映射, 统计信息)。"""
     market = args.market.upper()
     stats = {"universe": 0, "survivors": 0}
 
     if args.tickers:
-        watch = {correct_ticker(t): (t, "", "watch") for t in args.tickers}
+        full_watch = _watchlist("ALL")
+        watch = {}
+        for t in args.tickers:
+            ct = correct_ticker(t)
+            if ct in full_watch:
+                watch[ct] = full_watch[ct]
+            else:
+                watch[ct] = (t, "", "watch")
     else:
         # 影子持仓：watchlist.yaml 全部纳入，不受 MARKET 过滤（MARKET 仅约束全市场漏斗）
         watch = _watchlist("ALL")
 
     if args.scope == "watchlist" or args.tickers:
-        qs = [QuickScreen(ticker=t, name=n, is_priority=True) for t, (n, _, _) in watch.items()]
+        qs = [
+            _watch_qs(t, n, st)
+            for t, (n, _, st) in watch.items()
+        ]
         return qs, watch, stats
 
     # ── 全市场海选 + 第一层漏斗 ──
@@ -133,15 +156,21 @@ def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tup
 
     # 影子持仓优先拉取（在全市场漏斗之前，避免 429 后持仓分析失败）
     for t in watch_tickers:
+        n, _, st = watch[t]
         try:
             q = provider.get_quick_screen(t)
         except Exception:  # noqa: BLE001
             q = None
-        priority_qs.append(
-            dataclasses.replace(q, is_priority=True)
-            if q
-            else QuickScreen(ticker=t, name=watch[t][0], is_priority=True)
-        )
+        if q:
+            priority_qs.append(dataclasses.replace(
+                q,
+                is_priority=True,
+                is_held=st == "held",
+                user_status=st,
+                name=q.name or n,
+            ))
+        else:
+            priority_qs.append(_watch_qs(t, n, st))
         seen_priority.add(t)
 
     universe = _market_filter(get_universe(cap=args.max_universe), market)
@@ -151,12 +180,22 @@ def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tup
 
     # 幸存者里属于必看列表的，用漏斗结果替换先前粗筛（指标准确度更高）
     funnel_by_ticker = {q.ticker: q for q in survivors if q.ticker in watch_tickers}
-    priority_qs = [
-        dataclasses.replace(funnel_by_ticker[q.ticker], is_priority=True)
-        if q.ticker in funnel_by_ticker
-        else q
-        for q in priority_qs
-    ]
+    initial_priority = list(priority_qs)
+    rebuilt: list[QuickScreen] = []
+    for t in watch_tickers:
+        n, _, st = watch[t]
+        if t in funnel_by_ticker:
+            rebuilt.append(dataclasses.replace(
+                funnel_by_ticker[t],
+                is_priority=True,
+                is_held=st == "held",
+                user_status=st,
+                name=funnel_by_ticker[t].name or n,
+            ))
+        else:
+            existing = next((x for x in initial_priority if x.ticker == t), None)
+            rebuilt.append(existing if existing else _watch_qs(t, n, st))
+    priority_qs = rebuilt
     non_priority = [q for q in survivors if q.ticker not in watch_tickers]
     return priority_qs + non_priority, watch, stats
 
@@ -321,11 +360,14 @@ def main() -> int:
     recs: list[tuple[str, str, float | None, str]] = []
     cycs: list[tuple[str, str, str]] = []
     cyc_tops: list[tuple[str, str, str]] = []
+    held_items: list[tuple[str, str, str, list[str], str]] = []
+    held_detail_sections: list[str] = []
 
     for seq, q in enumerate(working):
         name = watch.get(q.ticker, (q.name or q.ticker, "", "watch"))[0]
         note = watch.get(q.ticker, ("", "", "watch"))[1]
         user_status = watch.get(q.ticker, ("", "", "watch"))[2]
+        is_held = normalize_user_status(user_status) == "held"
         use_ai = q.ticker in ai_tickers
         story_ctx = ""
         if use_ai and ai_mode:
@@ -355,8 +397,9 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"  ⚠️  {q.ticker} 历史存档失败：{exc}")
 
-            fw = fatal_warnings(a.fundamentals, a.metrics)
-            if fw:
+            fw = fatal_warnings(a.fundamentals, a.metrics, user_status=user_status)
+            signal_label = ""
+            if fw and not is_held:
                 display_fw = list(fw)
                 if a.metrics.is_cyclical:
                     dio_tail, pe_anchor = notify.cyclical_briefing_extras(a.fundamentals)
@@ -370,8 +413,16 @@ def main() -> int:
                     display_fw,
                     a.metrics.company_type,
                 ))
+            elif fw and is_held:
+                display_fw = list(fw)
+                if a.metrics.is_cyclical:
+                    dio_tail, pe_anchor = notify.cyclical_briefing_extras(a.fundamentals)
+                    if dio_tail:
+                        display_fw.append(dio_tail)
+                    if pe_anchor:
+                        display_fw.append(pe_anchor)
             ok, reason = is_quality_pick(a.fundamentals, a.metrics, fw)
-            if ok:
+            if ok and not is_held:
                 recs.append((
                     q.ticker,
                     display_name,
@@ -379,7 +430,7 @@ def main() -> int:
                     _enrich_cyclical_reason(a, reason),
                     a.metrics.company_type,
                 ))
-            if not fw:
+            if not fw and not is_held:
                 cyc = cyclical_watch(a.fundamentals, a.metrics)
                 if cyc:
                     cycs.append((
@@ -388,7 +439,7 @@ def main() -> int:
                         _enrich_cyclical_reason(a, cyc),
                     ))
             top = cyclical_top_warning(a.fundamentals, a.metrics)
-            if top:
+            if top and not is_held:
                 cyc_tops.append((
                     q.ticker,
                     display_name,
@@ -402,22 +453,48 @@ def main() -> int:
                     sig = extract_signal(a.narrative)
                     if sig:
                         order, label, color, sig_reason = sig
+                        signal_label = label
                         verdicts.append((
                             order, q.ticker, display_name, label, color, sig_reason, sbi_ok, peg, fcf_y,
                         ))
-                        entries.append((order, seq, _render_weekly(a, q.is_priority, label), sbi_ok))
+                        section = _render_weekly(a, q.is_priority, label)
+                        if is_held:
+                            held_items.append((
+                                q.ticker, display_name, a.metrics.company_type,
+                                list(fw) if fw else [], label,
+                            ))
+                            held_detail_sections.append(section)
+                        else:
+                            entries.append((order, seq, section, sbi_ok))
                     else:
+                        signal_label = _SIGNAL_UNKNOWN_LABEL if a.narrative else ""
                         verdicts.append((
                             _SIGNAL_UNKNOWN_ORDER, q.ticker, display_name,
                             _SIGNAL_UNKNOWN_LABEL, _SIGNAL_UNKNOWN_COLOR, "", sbi_ok, peg, fcf_y,
                         ))
-                        entries.append((
-                            _SIGNAL_UNKNOWN_ORDER, seq,
-                            _render_weekly(a, q.is_priority, _SIGNAL_UNKNOWN_LABEL if a.narrative else ""),
-                            sbi_ok,
-                        ))
+                        section = _render_weekly(
+                            a, q.is_priority, _SIGNAL_UNKNOWN_LABEL if a.narrative else "",
+                        )
+                        if is_held:
+                            held_items.append((
+                                q.ticker, display_name, a.metrics.company_type,
+                                list(fw) if fw else [], signal_label,
+                            ))
+                            held_detail_sections.append(section)
+                        else:
+                            entries.append((
+                                _SIGNAL_UNKNOWN_ORDER, seq, section, sbi_ok,
+                            ))
                 else:
-                    entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, _render_weekly(a, q.is_priority), sbi_ok))
+                    section = _render_weekly(a, q.is_priority)
+                    if is_held:
+                        held_items.append((
+                            q.ticker, display_name, a.metrics.company_type,
+                            list(fw) if fw else [], "",
+                        ))
+                        held_detail_sections.append(section)
+                    else:
+                        entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, section, sbi_ok))
             else:
                 change = None
                 day_change = None
@@ -482,7 +559,8 @@ def main() -> int:
     if tags:
         subject += "（" + "·".join(tags) + "）"
 
-    top_block = notify.render_briefing_summary(
+    top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
+    top_block += notify.render_briefing_summary(
         recs=recs,
         reds=reds,
         cycs=cycs,

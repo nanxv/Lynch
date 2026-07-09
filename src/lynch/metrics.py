@@ -283,3 +283,112 @@ def compute_metrics(f: Fundamentals) -> LynchMetrics:
         is_cyclical=cyclical,
         sbi_tradable=check_sbi_tradable_fundamentals(f),
     )
+
+
+def _quarterly_yoy_series(f: Fundamentals) -> list[float]:
+    """优先净利润同比，不足时回退营收同比。"""
+    if len(f.quarterly_earnings_yoy) >= 2:
+        return list(f.quarterly_earnings_yoy)
+    if len(f.quarterly_revenue_yoy) >= 2:
+        return list(f.quarterly_revenue_yoy)
+    return []
+
+
+def growth_stall_detector(f: Fundamentals, m: LynchMetrics) -> str | None:
+    """快增股连续两季失速探测器。触发则返回人类可读说明，否则 None。"""
+    if m.company_type != "快速增长型":
+        return None
+    yoys = _quarterly_yoy_series(f)
+    if len(yoys) < 4:
+        return None
+
+    from . import config
+
+    q3, q2, q1, q0 = yoys[-4:]
+    prev_avg = (q3 + q2) / 2
+    recent_avg = (q1 + q0) / 2
+    consecutive_drop = (
+        prev_avg > 0.05
+        and recent_avg <= prev_avg * config.GROWTH_STALL_DROP_RATIO
+    )
+
+    below_cagr = False
+    cagr_floor: float | None = None
+    if m.growth_rate is not None and m.growth_rate > 0:
+        cagr_floor = m.growth_rate * config.GROWTH_STALL_CAGR_FRACTION
+        below_cagr = q1 < cagr_floor and q0 < cagr_floor
+
+    if not consecutive_drop and not below_cagr:
+        return None
+
+    parts: list[str] = []
+    if consecutive_drop:
+        parts.append(
+            f"近两季YoY均值{recent_avg:.0%}较前两季{prev_avg:.0%}掉档超"
+            f"{(1 - config.GROWTH_STALL_DROP_RATIO):.0%}"
+        )
+    if below_cagr and cagr_floor is not None and m.growth_rate is not None:
+        parts.append(
+            f"近两季({q1:.0%}/{q0:.0%})均低于长期CAGR {m.growth_rate:.0%} 的"
+            f"{config.GROWTH_STALL_CAGR_FRACTION:.0%}阈值({cagr_floor:.0%})"
+        )
+    basis = "净利润" if f.quarterly_earnings_yoy else "营收"
+    seq = " → ".join(f"{y:.0%}" for y in yoys[-4:])
+    return f"{basis}同比：{'；'.join(parts)}（近四季 {seq}）"
+
+
+def pe_vs_5y_ratio(f: Fundamentals) -> float | None:
+    """当前 P/E 相对 5 年历史均值的倍数。"""
+    pe = f.spot_pe or f.trailing_pe
+    if pe is None or f.pe_5y_avg is None or f.pe_5y_avg <= 0:
+        return None
+    return pe / f.pe_5y_avg
+
+
+def stalwart_pe_exhaustion_warning(f: Fundamentals, m: LynchMetrics) -> str | None:
+    """稳增股 P/E 透支雷达。超过阈值时返回说明。"""
+    if m.company_type != "稳定增长型":
+        return None
+    ratio = pe_vs_5y_ratio(f)
+    if ratio is None:
+        return None
+    from . import config
+
+    if ratio > config.STALWART_PE_VS_5Y_EXHAUST:
+        pe = f.spot_pe or f.trailing_pe
+        return (
+            f"当前 P/E {pe:.1f} 为 5 年均值 {f.pe_5y_avg:.1f} 的 {ratio:.2f} 倍"
+            f"（透支阈值 > {config.STALWART_PE_VS_5Y_EXHAUST}）"
+        )
+    return None
+
+
+def held_discipline_prompt_append(
+    f: Fundamentals,
+    m: LynchMetrics,
+    *,
+    user_status: str,
+    report_mode: str,
+) -> str:
+    """持仓铁律附录：注入 Task Prompt 尾部，强制 LLM 考虑卖出。"""
+    from .watchlist import normalize_user_status
+
+    if normalize_user_status(user_status) != "held":
+        return ""
+    lines: list[str] = []
+    stall = growth_stall_detector(f, m)
+    if stall:
+        lines.append(
+            f"【持仓铁律·快增失速】{stall}。"
+            "你必须认真考虑降级或下达【坚决卖出/避开 (SELL/AVOID)】。"
+        )
+    exhaust = stalwart_pe_exhaustion_warning(f, m)
+    if exhaust:
+        if report_mode in ("quarterly", "annual"):
+            lines.append(
+                f"【持仓铁律·稳增P/E透支】{exhaust}。"
+                "你必须执行林奇高位换手质问，认真考虑 SELL/AVOID。"
+            )
+        else:
+            lines.append(f"【持仓铁律·稳增P/E透支】{exhaust}。")
+    return "\n".join(lines)

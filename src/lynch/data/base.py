@@ -74,6 +74,10 @@ class Fundamentals:
     dio_yoy: float | None = None  # 最近两期 DIO 变化率（正=天数拉长/恶化）
     industry_pe: float | None = None  # 同业 P/E 快照（industry-pe-snapshot）
 
+    # 季度同比序列（最近若干季 YoY，供快增失速探测）
+    quarterly_earnings_yoy: tuple[float, ...] = ()
+    quarterly_revenue_yoy: tuple[float, ...] = ()
+
     # ── 舆情安全网（实时新闻 + 8-K，禁止缓存）──
     recent_news_block: str = ""
 
@@ -99,6 +103,8 @@ class QuickScreen:
     net_cash_per_share: float | None = None
     net_cash_ratio: float | None = None  # 每股净现金/股价
     is_priority: bool = False  # 是否来自"必看列表"（watchlist）
+    is_held: bool = False  # 影子持仓 held：AI 绝对特权 + 独立会诊区
+    user_status: str = "watch"  # held / watch（avoid 不进链路）
 
     # ── Phase 1/2 多通道漏斗字段 ──
     sector: str | None = None

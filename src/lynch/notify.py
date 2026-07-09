@@ -226,6 +226,42 @@ def render_cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
     return "\n".join(lines)
 
 
+def render_held_consultation_block(
+    items: list[tuple[str, str, str, list[str], str]],
+    detail_sections: list[str] | None = None,
+) -> str:
+    """🛡️ 核心持仓独立会诊：置顶展示 held 标的，脱离普通优质/排雷榜单。
+
+    items: (ticker, name, company_type, warnings, signal_label)
+    detail_sections: 与 items 同序的完整会诊 Markdown（可选）
+    """
+    if not items:
+        return ""
+    lines = [
+        f"> ## 🛡️ 核心持仓独立会诊（{len(items)}只）",
+        ">",
+        "> *影子持仓享受最高优先级 AI 会诊；故事变坏时必须果断卖出。*",
+        ">",
+    ]
+    for i, (ticker, name, ctype, warnings, signal) in enumerate(items):
+        tag = f" [{ctype}]" if ctype else ""
+        sig = f" ｜ {signal}" if signal else ""
+        lines.append(f"> ### 🛡️ {ticker}｜{name}{tag}{sig}")
+        if warnings:
+            for w in warnings:
+                lines.append(f"> - **{w}**")
+        else:
+            lines.append("> - 暂无持仓铁律红灯")
+        lines.append(">")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    body = ""
+    if detail_sections:
+        body = "\n".join(detail_sections) + "\n\n---\n\n"
+    return "\n".join(lines) + body
+
+
 def render_briefing_summary(
     *,
     recs: list[tuple],
