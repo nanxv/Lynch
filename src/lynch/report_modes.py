@@ -8,24 +8,38 @@ from datetime import date
 # 全部合法模式
 REPORT_MODES = ("daily", "weekly", "monthly", "quarterly", "annual")
 
-# 需要 Gemini 深度会诊的模式（daily 仅硬指标 + 狙击例外）
-AI_MODES = ("weekly", "monthly", "quarterly", "annual")
+# 需要 Gemini 深度会诊的模式（daily 仅在异动触发时走 AI）
+AI_MODES = ("daily", "weekly", "monthly", "quarterly", "annual")
 
 MODE_TITLES = {
-    "daily": "自选股监控日报",
-    "weekly": "深度分析周报",
+    "daily": "深度异动狙击手日报",
+    "weekly": "全境多桶雷达周报",
     "monthly": "月度动量会诊",
-    "quarterly": "财报季度会诊",
-    "annual": "年终持仓审视",
+    "quarterly": "持仓生死拷问季报",
+    "annual": "林奇逻辑重估年报",
 }
 
 SUBJECT_PREFIX = {
-    "daily": "【彼得林奇自选股监控】日报",
-    "weekly": "【彼得林奇深度分析】周报",
+    "daily": "【林奇异动狙击】日报",
+    "weekly": "【林奇全境雷达】周报",
     "monthly": "【彼得林奇月度会诊】月报",
-    "quarterly": "【彼得林奇财报季会诊】季报",
-    "annual": "【彼得林奇年终审视】年报",
+    "quarterly": "【林奇持仓拷问】季报",
+    "annual": "【林奇年终重估】年报",
 }
+
+
+def allows_full_universe(mode: str) -> bool:
+    """仅周报允许 scope=full 全市场漏斗。"""
+    return mode == "weekly"
+
+
+def held_only_mode(mode: str) -> bool:
+    """季报/年报仅限 held 持仓。"""
+    return mode in ("quarterly", "annual")
+
+
+def is_daily_sniper_mode(mode: str) -> bool:
+    return mode == "daily"
 
 
 def is_ai_mode(mode: str) -> bool:

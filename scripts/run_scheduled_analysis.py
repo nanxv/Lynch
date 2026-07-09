@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """彼得·林奇自动化流水线（GitHub Actions 后台，邮件版，双层漏斗）。
 
-【立体化投研周期】坚决拒绝盘中实时告警/高频轮询，五种静默节奏：
-  --mode daily      日报：纯代码量化 + 全市场 SBI 狙击（例外调 Gemini）
-  --mode weekly     周报：年度口径 + Gemini 四步裁决
-  --mode monthly    月报（月末最后交易日）：价量/RSI/PEG 漂移 + Gemini 动量会诊
-  --mode quarterly  季报：真实季度财报 QoQ/YoY + Gemini 财报季会诊
-  --mode annual     年报：5-10 年长周期资本配置 + Gemini 清仓审视
+【立体化投研周期 · 四维分离】
+  --mode daily      日报：⚡ 深度异动狙击手（watchlist · 异动触发才发报）
+  --mode weekly     周报：🌍 全境多桶雷达（唯一允许 scope=full）
+  --mode monthly    月报：价量/RSI/PEG 漂移（watchlist）
+  --mode quarterly  季报：⚖️ 持仓生死拷问（仅 held）
+  --mode annual     年报：🧭 林奇逻辑重估（仅 held）
 
 【双层漏斗 / 沙漏机制】（--scope full 时）：
   全市场成分股(万级) → 第一层纯代码硬指标漏斗(刷掉95%) → 第二层 AI 上限熔断(≤MAX_AI_ANALYSIS_COUNT) → 邮件
@@ -52,7 +52,6 @@ from src.lynch.funnel import (  # noqa: E402
     BUCKET_ORDER,
     BUCKET_TURNAROUND,
     assign_briefing_bucket,
-    check_daily_sniper_trigger,
     cyclical_top_warning,
     cyclical_watch,
     fatal_warnings,
@@ -65,7 +64,6 @@ from src.lynch.history import (  # noqa: E402
     load_previous,
     record_from_analysis,
 )
-from src.lynch.sniper import run_sniper_alert  # noqa: E402
 from src.lynch.signals import (  # noqa: E402
     SIGNAL_UNKNOWN_COLOR,
     SIGNAL_UNKNOWN_LABEL,
@@ -74,10 +72,13 @@ from src.lynch.signals import (  # noqa: E402
     fcf_yield,
 )
 from src.lynch.llm import LLMError  # noqa: E402
+from src.lynch.daily_sniper import check_daily_trigger  # noqa: E402
 from src.lynch.report_modes import (  # noqa: E402
     AI_MODES,
     MODE_TITLES,
     SUBJECT_PREFIX,
+    allows_full_universe,
+    held_only_mode,
     is_ai_mode,
     is_last_trading_day_of_month,
     normalize_mode,
@@ -129,32 +130,42 @@ def _watch_qs(ticker: str, name: str, user_status: str, **kwargs) -> QuickScreen
     )
 
 
-def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tuple[str, str, str]], dict]:
-    """返回 (待分析 QuickScreen 列表, 必看信息映射, 统计信息)。"""
-    market = args.market.upper()
-    stats = {"universe": 0, "survivors": 0}
+def _apply_temporal_routing(args) -> None:
+    """四维时间架构：强制 scope / 候选集约束。"""
+    if args.scope == "full" and not allows_full_universe(args.mode):
+        print(f"ℹ️  {args.mode} 模式不支持 scope=full，已强制 watchlist")
+        args.scope = "watchlist"
 
+
+def _resolve_watch(args) -> dict[str, tuple[str, str, str]]:
     if args.tickers:
         full_watch = _watchlist("ALL")
-        watch = {}
+        watch: dict[str, tuple[str, str, str]] = {}
         for t in args.tickers:
             ct = correct_ticker(t)
             if ct in full_watch:
                 watch[ct] = full_watch[ct]
             else:
                 watch[ct] = (t, "", "watch")
-    else:
-        # 影子持仓：watchlist.yaml 全部纳入，不受 MARKET 过滤（MARKET 仅约束全市场漏斗）
-        watch = _watchlist("ALL")
+        return watch
+    watch = _watchlist("ALL")
+    if held_only_mode(args.mode):
+        watch = {k: v for k, v in watch.items() if v[2] == "held"}
+    return watch
 
-    if args.scope == "watchlist" or args.tickers:
-        qs = [
-            _watch_qs(t, n, st)
-            for t, (n, _, st) in watch.items()
-        ]
+
+def _build_working_set(args, provider) -> tuple[list[QuickScreen], dict[str, tuple[str, str, str]], dict]:
+    """返回 (待分析 QuickScreen 列表, 必看信息映射, 统计信息)。"""
+    market = args.market.upper()
+    stats = {"universe": 0, "survivors": 0}
+
+    watch = _resolve_watch(args)
+
+    use_full_funnel = args.scope == "full" and allows_full_universe(args.mode)
+
+    if not use_full_funnel:
+        qs = [_watch_qs(t, n, st) for t, (n, _, st) in watch.items()]
         return qs, watch, stats
-
-    # ── 全市场海选 + 第一层漏斗 ──
     watch_tickers = set(watch)
     priority_qs: list[QuickScreen] = []
     seen_priority: set[str] = set()
@@ -228,6 +239,115 @@ def _enrich_cyclical_reason(a: LynchAnalysis, reason: str) -> str:
     return notify.append_cyclical_detail_tail(
         reason, dio_tail=dio_tail, industry_pe_anchor=pe_anchor,
     )
+
+
+def _render_daily_section(
+    a: LynchAnalysis,
+    *,
+    priority: bool,
+    trigger_reasons: list[str],
+    signal_label: str = "",
+) -> str:
+    star = "⭐ " if priority else ""
+    tag = f"　｜　{signal_label}" if signal_label else ""
+    f = a.fundamentals
+    trig = "；".join(trigger_reasons)
+    lines = [
+        f"## {star}{a.ticker} — {f.name or a.ticker}{tag}",
+        "",
+        f"> 触发：{trig}",
+        "",
+        f"`{_flag_line(a)}`",
+        "",
+    ]
+    if a.narrative:
+        lines.append(a.narrative)
+    else:
+        lines.append("```")
+        lines.append(a.data_block)
+        lines.append("```")
+    lines.append("")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def _run_daily_sniper(args, provider) -> int:
+    """日报：仅异动触发标的，无异动则静默退出。"""
+    watch = _resolve_watch(args)
+    if not watch:
+        print("⚠️  watchlist 为空。")
+        return 0
+
+    triggered: list[tuple[QuickScreen, str, str, list[str], float | None]] = []
+    for t, (n, note, st) in watch.items():
+        ok, reasons, chg = check_daily_trigger(provider, t)
+        if ok:
+            triggered.append((_watch_qs(t, n, st), note, st, reasons, chg))
+
+    if not triggered:
+        print("ℹ️  无异动标的（价格波动/8-K/内部人），日报静默跳过。")
+        return 0
+
+    ai_available = llm.is_configured()
+    if not ai_available:
+        print("⚠️  日报异动触发但未配置 GEMINI_API_KEY，跳过 AI 会诊。\n")
+
+    entries: list[str] = []
+    daily_summary: list[tuple[str, str, list[str], str]] = []
+    counts = {"analyzed": 0, "ai": 0, "data_only": 0}
+
+    for q, note, st, reasons, chg in triggered:
+        try:
+            a = analyze_company(
+                q.ticker,
+                user_note=note,
+                data_only=not ai_available,
+                provider=provider,
+                user_status=st,
+                report_mode="daily",
+                day_change=chg,
+            )
+            counts["analyzed"] += 1
+            counts["ai" if ai_available else "data_only"] += 1
+            label = ""
+            if ai_available and a.narrative:
+                sig = extract_signal(a.narrative)
+                if sig:
+                    label = sig[1]
+            daily_summary.append((q.ticker, a.fundamentals.name or q.name or q.ticker, reasons, label))
+            entries.append(_render_daily_section(
+                a, priority=q.is_priority, trigger_reasons=reasons, signal_label=label,
+            ))
+        except (FundamentalsError, LLMError) as exc:
+            print(f"  ❌ {q.ticker}: {exc}")
+            entries.append(_render_error(q.ticker, q.name or q.ticker, str(exc)))
+
+    date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
+    subject = f"{SUBJECT_PREFIX['daily']} - {date_str}（⚡{len(triggered)}只异动）"
+    us_session = expected_daily_session_date().isoformat()
+    top_block = notify.render_briefing_summary(
+        mode="daily",
+        reds=[],
+        cycs=[],
+        verdicts=[],
+        ai_count=counts["ai"],
+        ai_mode=True,
+        daily_triggered=daily_summary,
+    )
+    briefing = build_briefing(
+        "daily", date_str, top_block, entries, [], {}, counts,
+        ai_mode=True, flat_sections=entries, us_session_date=us_session,
+        provider_name=provider.name,
+    )
+    print("\n" + "=" * 60)
+    print(f"主题：{subject}")
+    print(briefing)
+    print("=" * 60 + "\n")
+    if args.no_email:
+        print("ℹ️  --no-email：已跳过邮件发送。")
+    else:
+        notify.send_email(subject, briefing)
+    return 0
 
 
 def _render_daily(a: LynchAnalysis, change_5d: float | None, priority: bool) -> str:
@@ -326,6 +446,8 @@ def main() -> int:
         args.market = config.DEFAULT_MARKET
 
     args.mode = normalize_mode(args.mode)
+    _apply_temporal_routing(args)
+
     if args.mode == "daily" and not args.force:
         ok, info = should_run_daily_report()
         if not ok:
@@ -336,12 +458,18 @@ def main() -> int:
         return 0
 
     provider = get_provider()
+
+    if args.mode == "daily":
+        return _run_daily_sniper(args, provider)
+
     ai_mode = is_ai_mode(args.mode)
     ai_available = ai_mode and llm.is_configured()
     if ai_mode and not ai_available:
         print(f"⚠️  {args.mode} 模式但未检测到 GEMINI_API_KEY，本次全部降级为仅硬指标。\n")
 
     print(f"📡 [{args.mode}/{args.scope}] 数据源={provider.name} market={args.market}\n")
+    if held_only_mode(args.mode):
+        print("📌 季报/年报模式：仅分析 watchlist 中 status=held 的持仓\n")
     avoided = list_avoided_tickers()
     if avoided:
         print(f"🚫 黑名单 avoid 跳过：{', '.join(avoided)}\n")
@@ -350,12 +478,18 @@ def main() -> int:
         print("⚠️  没有可分析的标的。")
         return 0
 
-    # 第二层漏斗：决定谁走 AI
+    # 第二层漏斗：决定谁走 AI（季报/年报 held 全量送 AI）
     if ai_available:
-        ai_qs, data_only_qs = rank_and_cap(working)
-        ai_tickers = {q.ticker for q in ai_qs}
+        if held_only_mode(args.mode):
+            ai_tickers = {q.ticker for q in working}
+        else:
+            ai_qs, _data_only_qs = rank_and_cap(working)
+            ai_tickers = {q.ticker for q in ai_qs}
     else:
         ai_tickers = set()
+
+    is_weekly_mode = args.mode == "weekly"
+    is_held_report = held_only_mode(args.mode)
 
     counts = {"analyzed": 0, "ai": 0, "data_only": 0}
     # entries: (排序键, 序号, 详情文本, sbi_tradable)
@@ -426,8 +560,10 @@ def main() -> int:
                         display_fw.append(dio_tail)
                     if pe_anchor:
                         display_fw.append(pe_anchor)
-            bucket, bucket_reason = assign_briefing_bucket(a.fundamentals, a.metrics, fw)
-            if bucket and not is_held:
+            bucket, bucket_reason = None, ""
+            if is_weekly_mode:
+                bucket, bucket_reason = assign_briefing_bucket(a.fundamentals, a.metrics, fw)
+            if is_weekly_mode and bucket and not is_held:
                 sort_key = a.metrics.peg
                 if bucket == BUCKET_ASSET:
                     cash = a.fundamentals.total_cash or 0
@@ -447,7 +583,7 @@ def main() -> int:
                     a.metrics.company_type,
                     a.metrics.ultimate_alpha,
                 ))
-            if not fw and not is_held:
+            if is_weekly_mode and not fw and not is_held:
                 cyc = cyclical_watch(a.fundamentals, a.metrics)
                 if cyc:
                     cycs.append((
@@ -455,13 +591,14 @@ def main() -> int:
                         display_name,
                         _enrich_cyclical_reason(a, cyc),
                     ))
-            top = cyclical_top_warning(a.fundamentals, a.metrics)
-            if top and not is_held:
-                cyc_tops.append((
-                    q.ticker,
-                    display_name,
-                    _enrich_cyclical_reason(a, top),
-                ))
+            if is_weekly_mode:
+                top = cyclical_top_warning(a.fundamentals, a.metrics)
+                if top and not is_held:
+                    cyc_tops.append((
+                        q.ticker,
+                        display_name,
+                        _enrich_cyclical_reason(a, top),
+                    ))
 
             if ai_mode:
                 peg = a.metrics.peg
@@ -475,7 +612,7 @@ def main() -> int:
                             order, q.ticker, display_name, label, color, sig_reason, sbi_ok, peg, fcf_y,
                         ))
                         section = _render_weekly(a, q.is_priority, label)
-                        if is_held:
+                        if is_held_report or is_held:
                             held_items.append((
                                 q.ticker, display_name, a.metrics.company_type,
                                 list(fw) if fw else [], label,
@@ -492,7 +629,7 @@ def main() -> int:
                         section = _render_weekly(
                             a, q.is_priority, _SIGNAL_UNKNOWN_LABEL if a.narrative else "",
                         )
-                        if is_held:
+                        if is_held_report or is_held:
                             held_items.append((
                                 q.ticker, display_name, a.metrics.company_type,
                                 list(fw) if fw else [], signal_label,
@@ -504,7 +641,7 @@ def main() -> int:
                             ))
                 else:
                     section = _render_weekly(a, q.is_priority)
-                    if is_held:
+                    if is_held_report or is_held:
                         held_items.append((
                             q.ticker, display_name, a.metrics.company_type,
                             list(fw) if fw else [], "",
@@ -512,29 +649,6 @@ def main() -> int:
                         held_detail_sections.append(section)
                     else:
                         entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, section, sbi_ok))
-            else:
-                change = None
-                day_change = None
-                try:
-                    change = provider.get_stock_price_change(q.ticker, "5d")
-                    day_change = provider.get_daily_price_change(q.ticker)
-                except Exception:  # noqa: BLE001
-                    pass
-                if (
-                    args.mode == "daily"
-                    and check_daily_sniper_trigger(a.fundamentals, a.metrics, day_change)
-                ):
-                    try:
-                        run_sniper_alert(
-                            q.ticker,
-                            provider=provider,
-                            day_change=day_change,
-                            user_status=user_status,
-                            send=not args.no_email,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"  ⚠️  {q.ticker} 狙击警报失败：{exc}")
-                entries.append((seq, seq, _render_daily(a, change, q.is_priority), sbi_ok))
         except (FundamentalsError, LLMError) as exc:
             print(f"  ❌ {q.ticker}: {exc}")
             entries.append((99, seq, _render_error(q.ticker, name, str(exc)), True))
@@ -550,17 +664,18 @@ def main() -> int:
     verdicts.sort(key=lambda v: v[0])
 
     for bid in BUCKET_ORDER:
-        if bid == BUCKET_FAST:
-            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
-        elif bid == BUCKET_ASSET:
-            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
-        elif bid == BUCKET_DIVIDEND:
-            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
-        else:
-            buckets[bid].sort(key=lambda r: r[0])
-        buckets[bid] = buckets[bid][:20]
+        if is_weekly_mode:
+            if bid == BUCKET_FAST:
+                buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+            elif bid == BUCKET_ASSET:
+                buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+            elif bid == BUCKET_DIVIDEND:
+                buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+            else:
+                buckets[bid].sort(key=lambda r: r[0])
+            buckets[bid] = buckets[bid][:20]
 
-    bucket_total = sum(len(v) for v in buckets.values())
+    bucket_total = sum(len(v) for v in buckets.values()) if is_weekly_mode else 0
 
     date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
     subject = f"{SUBJECT_PREFIX.get(args.mode, SUBJECT_PREFIX['daily'])} - {date_str}"
@@ -574,7 +689,7 @@ def main() -> int:
         buy_count_all = sum(1 for v in verdicts if v[0] == 0)
         if buy_count_all:
             tags.append(f"🧠{buy_count_all}只强买")
-    if bucket_total:
+    if bucket_total and is_weekly_mode:
         tags.append(f"🟢{bucket_total}只候选")
     if reds:
         tags.append(f"🔴{len(reds)}只排雷")
@@ -585,16 +700,40 @@ def main() -> int:
     if tags:
         subject += "（" + "·".join(tags) + "）"
 
-    top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
-    top_block += notify.render_briefing_summary(
-        buckets=buckets,
-        reds=reds,
-        cycs=cycs,
-        cyc_tops=cyc_tops,
-        verdicts=verdicts,
-        ai_count=counts["ai"],
-        ai_mode=ai_mode,
-    )
+    if is_held_report:
+        top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
+        top_block += notify.render_briefing_summary(
+            mode=args.mode,
+            reds=[],
+            cycs=[],
+            verdicts=verdicts,
+            ai_count=counts["ai"],
+            ai_mode=ai_mode,
+            held_items=held_items,
+        )
+    elif is_weekly_mode:
+        top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
+        top_block += notify.render_briefing_summary(
+            mode="weekly",
+            buckets=buckets,
+            reds=reds,
+            cycs=cycs,
+            cyc_tops=cyc_tops,
+            verdicts=verdicts,
+            ai_count=counts["ai"],
+            ai_mode=ai_mode,
+        )
+    else:
+        top_block = notify.render_briefing_summary(
+            mode=args.mode,
+            buckets=buckets if is_weekly_mode else None,
+            reds=reds,
+            cycs=cycs,
+            cyc_tops=cyc_tops,
+            verdicts=verdicts,
+            ai_count=counts["ai"],
+            ai_mode=ai_mode,
+        )
     us_session = expected_daily_session_date().isoformat() if args.mode == "daily" else None
     briefing = build_briefing(
         args.mode, date_str, top_block, main_sections, hardcore_sections, stats, counts,

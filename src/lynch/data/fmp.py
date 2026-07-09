@@ -1368,12 +1368,55 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
 
 
 
+def _fetch_daily_sniper_fundamentals(
+    sym: str,
+    bundle: dict[str, Any],
+    quote: dict[str, Any],
+) -> Fundamentals:
+    """日报轻量路径：仅静态缓存 + 实时 quote/新闻，不刷新财报包、不拉 Alpha/巨鳄。"""
+    base = _build_fundamentals_from_bundle(sym, bundle, quote, mode="daily")
+    historical = bundle.get("historical") or []
+    spot = quote.get("price")
+    spot_pe = quote.get("pe") or base.trailing_pe
+    eps = implied_eps_ttm(spot, spot_pe)
+    if eps is None and base.eps_series:
+        eps = base.eps_series[max(base.eps_series)]
+    pe_min, pe_avg = _pe_range_from_hist(historical, eps)
+    news = _build_sensitive_intel_block(sym)
+    return dataclasses.replace(
+        base,
+        price=spot,
+        spot_price=spot,
+        spot_pe=spot_pe,
+        trailing_pe=spot_pe,
+        pe_5y_min=pe_min,
+        pe_5y_avg=pe_avg,
+        recent_news_block=news,
+        whale_alert_block="",
+        whale_alert_brief="",
+        insider_buy_count=0,
+        insider_sell_count=0,
+        insider_net_buy_signal=False,
+        held_percent_institutions=base.held_percent_institutions,
+    )
+
+
 class FmpProvider(BaseDataProvider):
     name = "fmp stable (Financial Modeling Prep)"
 
     def _fetch_fundamentals(self, ticker: str, *, mode: str = "weekly") -> Fundamentals:
         mode = normalize_mode(mode)
         sym = correct_ticker(ticker)
+
+        if mode == "daily":
+            bundle = _get_static_bundle(sym, allow_refresh=False)
+            if not bundle.get("profile"):
+                bundle = _get_static_bundle(sym, allow_refresh=True)
+            if not bundle.get("profile"):
+                raise FundamentalsError(f"{sym}: FMP 无 profile 数据（可能为非美股代码）")
+            quote = _fetch_quote(sym)
+            return _fetch_daily_sniper_fundamentals(sym, bundle, quote)
+
         bundle = _get_static_bundle(sym)
         if not bundle.get("profile"):
             raise FundamentalsError(f"{sym}: FMP 无 profile 数据（可能为非美股代码）")

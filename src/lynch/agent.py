@@ -8,7 +8,15 @@ from . import knowledge, llm
 from .cyclical import cyclical_data_block_lines
 from .data import Fundamentals, get_provider
 from .data.base import BaseDataProvider
-from .metrics import LynchMetrics, compute_metrics, held_discipline_prompt_append, alpha_intel_lines, pe_vs_5y_ratio
+from .metrics import (
+    LynchMetrics,
+    alpha_intel_lines,
+    annual_rebalance_block_lines,
+    compute_metrics,
+    held_discipline_prompt_append,
+    pe_vs_5y_ratio,
+    quarterly_discipline_block_lines,
+)
 from .prompt import SYSTEM_PROMPT
 from .watchlist import normalize_user_status
 
@@ -55,7 +63,55 @@ def _series_str(series: dict[int, float], money: bool = True,
     return " → ".join(f"{y}:{_fmt(series[y], money=money, currency=currency)}" for y in years)
 
 
-def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
+def build_daily_data_block(
+    f: Fundamentals,
+    m: LynchMetrics,
+    *,
+    day_change: float | None = None,
+) -> str:
+    """日报·深度异动狙击：缓存底盘 + 即时估值锚（不拉全量财报）。"""
+    cur = f.currency
+    lines: list[str] = []
+    if f.recent_news_block:
+        lines.append(f.recent_news_block)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+    lines.append("【⚡ 日报·深度异动狙击数据盘】")
+    chg_s = f"{day_change * 100:+.1f}%" if day_change is not None else "数据缺失"
+    lines.append(f"当日涨跌幅: {chg_s} | 现价: {_fmt(f.spot_price or f.price)} {cur or ''}")
+    spot_pe = f.spot_pe or f.trailing_pe
+    lines.append(f"即时 P/E(TTM): {_fmt(spot_pe)} | 股息修正 PEG: {_fmt(m.peg)}")
+    if f.pe_5y_avg is not None and spot_pe is not None:
+        ratio = spot_pe / f.pe_5y_avg if f.pe_5y_avg > 0 else None
+        lines.append(
+            f"估值锚：5年历史均值 P/E {_fmt(f.pe_5y_avg)}"
+            + (f" | 当前为均值的 {_fmt(ratio)} 倍" if ratio else "")
+        )
+    debt = m.by_key("debt")
+    if debt:
+        lines.append(f"护城河·负债: {debt.verdict}")
+    fcf = m.by_key("fcf")
+    if fcf:
+        lines.append(f"护城河·现金流: {fcf.verdict}")
+    if f.dio_yoy is not None:
+        lines.append(f"周期底盘·DIO 近两期变化: {f.dio_yoy * 100:+.1f}%")
+    elif f.dio_series:
+        yrs = sorted(f.dio_series)
+        lines.append(f"周期底盘·DIO: {f.dio_series[yrs[-1]]:.0f} 天（{yrs[-1]}）")
+    lines.append(f"林奇分类(缓存): {m.company_type}")
+    lines.append("")
+    lines.append("— 林奇量化快照 —")
+    for metric in m.metrics:
+        icon = _FLAG_ICON.get(metric.flag, "⚪")
+        val = "N/A" if metric.value is None else metric.value
+        lines.append(f"{icon} {metric.label}: {val} → {metric.verdict}")
+    return "\n".join(lines)
+
+
+def build_data_block(f: Fundamentals, m: LynchMetrics, *, day_change: float | None = None) -> str:
+    if f.report_mode == "daily":
+        return build_daily_data_block(f, m, day_change=day_change)
     cur = f.currency
     lines: list[str] = []
 
@@ -74,9 +130,23 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
         lines.append("")
 
     alpha_lines = alpha_intel_lines(f, m)
-    if alpha_lines:
+    if alpha_lines and f.report_mode == "weekly":
         lines.append("【林奇筹码面 Alpha 探针】")
         lines.extend(alpha_lines)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    q_disc = quarterly_discipline_block_lines(f, m)
+    if q_disc and f.report_mode == "quarterly":
+        lines.extend(q_disc)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    a_disc = annual_rebalance_block_lines(f, m)
+    if a_disc and f.report_mode == "annual":
+        lines.extend(a_disc)
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -106,11 +176,11 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
         tags.append("周期股（高P/E与利润下滑排雷已豁免，反向判定）")
     if m.growth_cap_warn:
         tags.append("growth_cap_warn（历史增速≥25%，紧箍咒）")
-    if m.institutional_neglect:
+    if m.institutional_neglect and f.report_mode == "weekly":
         tags.append("institutional_neglect（机构冷落<40%）")
-    if m.insider_net_buying:
+    if m.insider_net_buying and f.report_mode == "weekly":
         tags.append("insider_net_buying（内部人净买入）")
-    if m.ultimate_alpha:
+    if m.ultimate_alpha and f.report_mode == "weekly":
         tags.append("ultimate_alpha（终极 Alpha 双响炮）")
     lines.append(" | ".join(tags))
     lines.append(f"现价(spot): {_fmt(f.spot_price or f.price)} {cur or ''} | 市值: {_fmt(f.market_cap, money=True, currency=cur)}")
@@ -177,6 +247,7 @@ def analyze_company(
     user_status: str = "watch",
     story_diff_context: str = "",
     report_mode: str = "weekly",
+    day_change: float | None = None,
 ) -> LynchAnalysis:
     """完整分析一家公司。data_only=True 时跳过 LLM，仅返回硬指标数据区块。
 
@@ -186,7 +257,7 @@ def analyze_company(
     prov = provider or get_provider()
     f = prov.get_fundamentals(ticker, mode=report_mode)
     m = compute_metrics(f)
-    data_block = build_data_block(f, m)
+    data_block = build_data_block(f, m, day_change=day_change)
 
     narrative: str | None = None
     if not data_only:

@@ -328,8 +328,85 @@ def render_held_consultation_block(
     return "\n".join(lines) + body
 
 
+def render_mode_banner(mode: str) -> str:
+    """四维时间架构：各模式置顶说明条。"""
+    banners = {
+        "daily": (
+            "> ## ⚡ 深度异动狙击手\n"
+            ">\n"
+            "> *仅 watchlist 异动标的｜触发：涨跌幅≥阈值 / 突发8-K / 内部人净买入｜"
+            "无异动则静默不发报。*\n"
+            ">\n---\n\n"
+        ),
+        "weekly": (
+            "> ## 🌍 全境多桶雷达\n"
+            ">\n"
+            "> *全市场漏斗幸存者｜多桶分类 + Alpha 探针 + 持仓独立会诊。*\n"
+            ">\n---\n\n"
+        ),
+        "quarterly": (
+            "> ## ⚖️ 持仓生死拷问（季报）\n"
+            ">\n"
+            "> *仅限 held 影子持仓｜零宽容卖出审判｜非 BUY/HOLD 即 SELL。*\n"
+            ">\n---\n\n"
+        ),
+        "annual": (
+            "> ## 🧭 林奇逻辑重估（年报）\n"
+            ">\n"
+            "> *仅限 held 影子持仓｜分类退化评估 + 年终清仓审视。*\n"
+            ">\n---\n\n"
+        ),
+    }
+    return banners.get(mode, "")
+
+
+def render_daily_sniper_summary(
+    triggered: list[tuple[str, str, list[str], str]],
+) -> str:
+    """日报异动摘要。triggered: (ticker, name, reasons, signal_label)"""
+    if not triggered:
+        return ""
+    lines = [
+        f"> ## ⚡ 今日异动触发（{len(triggered)}只）",
+        ">",
+    ]
+    for ticker, name, reasons, signal in triggered:
+        sig = f" ｜ {signal}" if signal else ""
+        lines.append(f"> - **{ticker}｜{name}**{sig}：{'；'.join(reasons)}")
+    lines.append(">")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_held_interrogation_summary(
+    mode: str,
+    held_items: list[tuple[str, str, str, list[str], str]],
+) -> str:
+    """季报/年报 held 专属摘要（无多桶雷达）。"""
+    if not held_items:
+        return ""
+    title = "⚖️ 持仓生死拷问" if mode == "quarterly" else "🧭 年终逻辑重估"
+    lines = [f"> ## {title}（{len(held_items)}只 held）", ">"]
+    for ticker, name, ctype, warnings, signal in held_items:
+        tag = f" [{ctype}]" if ctype else ""
+        sig = f" ｜ {signal}" if signal else ""
+        lines.append(f"> ### {ticker}｜{name}{tag}{sig}")
+        for w in warnings or []:
+            lines.append(f"> - **{w}**")
+        if not warnings:
+            lines.append("> - 暂无量化红灯")
+        lines.append(">")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_briefing_summary(
     *,
+    mode: str = "weekly",
     buckets: dict[str, list[tuple]] | None = None,
     recs: list[tuple] | None = None,
     reds: list[tuple],
@@ -338,10 +415,26 @@ def render_briefing_summary(
     verdicts: list[tuple],
     ai_count: int,
     ai_mode: bool,
+    daily_triggered: list[tuple[str, str, list[str], str]] | None = None,
+    held_items: list[tuple[str, str, str, list[str], str]] | None = None,
 ) -> str:
-    """简报置顶区：AI 在场时隐藏机械雷达，直接展示裁决看板。"""
-    parts: list[str] = []
-    if ai_count == 0:
+    """简报置顶区：按时间维度分离渲染逻辑。"""
+    parts: list[str] = [render_mode_banner(mode)]
+
+    if mode == "daily":
+        parts.append(render_daily_sniper_summary(daily_triggered or []))
+        return "".join(parts)
+
+    if mode in ("quarterly", "annual"):
+        parts.append(render_held_interrogation_summary(mode, held_items or []))
+        if ai_count > 0 and held_items:
+            parts.append(render_dual_track_verdict_dashboard(
+                verdicts, ai_count=ai_count, show_when_empty=True,
+            ))
+        return "".join(parts)
+
+    # weekly / monthly：机械雷达 + 多桶 + 裁决看板
+    if ai_count == 0 and mode == "weekly":
         if buckets is not None:
             parts.append(render_multi_bucket_briefing(buckets))
         elif recs:

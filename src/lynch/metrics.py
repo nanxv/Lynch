@@ -432,3 +432,95 @@ def held_discipline_prompt_append(
         else:
             lines.append(f"【持仓铁律·稳增P/E透支】{exhaust}。")
     return "\n".join(lines)
+
+
+def quarterly_discipline_block_lines(f: Fundamentals, m: LynchMetrics) -> list[str]:
+    """季报·持仓卖出硬化数据块（置顶）。"""
+    lines = ["【⚖️ 季报·持仓卖出硬化探针】"]
+    qy = f.quarterly_earnings_yoy or f.quarterly_revenue_yoy
+    if qy:
+        basis = "净利润" if f.quarterly_earnings_yoy else "营收"
+        seq = " → ".join(f"{y * 100:.1f}%" for y in qy[-4:])
+        lines.append(f"- 近四季{basis} YoY: {seq}")
+    stall = growth_stall_detector(f, m)
+    if stall:
+        lines.append(f"- 🚨 快增失速: {stall}")
+    if f.dio_yoy is not None:
+        flag = "恶化" if f.dio_yoy > 0.15 else ("拉长" if f.dio_yoy > 0 else "改善")
+        lines.append(f"- DIO 近两期变化: {f.dio_yoy * 100:+.1f}%（{flag}）")
+    exhaust = stalwart_pe_exhaustion_warning(f, m)
+    if exhaust:
+        lines.append(f"- 🚨 稳增P/E透支: {exhaust}")
+    elif m.company_type == "稳定增长型":
+        ratio = pe_vs_5y_ratio(f)
+        if ratio is not None:
+            lines.append(f"- P/E vs 5年均: {ratio:.2f} 倍")
+    return lines
+
+
+def annual_rebalance_block_lines(f: Fundamentals, m: LynchMetrics) -> list[str]:
+    """年报·长周期逻辑重估数据块。"""
+    lines = ["【🧭 年报·林奇逻辑重估】"]
+    if m.growth_rate is not None:
+        lines.append(f"- 复合增速(CAGR): {m.growth_rate * 100:.1f}% ({m.growth_basis})")
+    if f.eps_series:
+        yrs = sorted(f.eps_series)
+        if len(yrs) >= 3:
+            span = yrs[-1] - yrs[0]
+            if span > 0 and f.eps_series[yrs[0]] > 0:
+                cagr = (f.eps_series[yrs[-1]] / f.eps_series[yrs[0]]) ** (1 / span) - 1
+                lines.append(f"- EPS 全序列 CAGR ({yrs[0]}→{yrs[-1]}): {cagr * 100:.1f}%")
+    if f.dividend_yield:
+        lines.append(f"- 当前股息率: {f.dividend_yield:.2f}%")
+    if f.pe_5y_avg is not None:
+        lines.append(f"- 5年历史均值 P/E: {f.pe_5y_avg:.1f}")
+    lines.append(f"- 代码初判林奇分类: {m.company_type}")
+    if m.growth_cap_warn:
+        lines.append("- ⚠️ 仍带超高增速紧箍咒标签，警惕分类退化")
+    return lines
+
+
+def quarterly_discipline_block_lines(f: Fundamentals, m: LynchMetrics) -> list[str]:
+    """季报·持仓卖出硬化数据块（置顶）。"""
+    lines = ["【⚖️ 季报·持仓卖出硬化探针】"]
+    qy = f.quarterly_earnings_yoy or f.quarterly_revenue_yoy
+    if qy:
+        basis = "净利润" if f.quarterly_earnings_yoy else "营收"
+        seq = " → ".join(f"{y * 100:.1f}%" for y in qy[-4:])
+        lines.append(f"- 近四季{basis} YoY: {seq}")
+    stall = growth_stall_detector(f, m)
+    if stall:
+        lines.append(f"- 🚨 快增失速: {stall}")
+    if f.dio_yoy is not None:
+        flag = "恶化" if f.dio_yoy > 0.15 else ("拉长" if f.dio_yoy > 0 else "改善")
+        lines.append(f"- DIO 近两期变化: {f.dio_yoy * 100:+.1f}%（{flag}）")
+    exhaust = stalwart_pe_exhaustion_warning(f, m)
+    if exhaust:
+        lines.append(f"- 🚨 稳增P/E透支: {exhaust}")
+    elif m.company_type == "稳定增长型":
+        ratio = pe_vs_5y_ratio(f)
+        if ratio is not None:
+            lines.append(f"- P/E vs 5年均: {ratio:.2f} 倍")
+    return lines
+
+
+def annual_rebalance_block_lines(f: Fundamentals, m: LynchMetrics) -> list[str]:
+    """年报·长周期逻辑重估数据块。"""
+    lines = ["【🧭 年报·林奇逻辑重估】"]
+    if m.growth_rate is not None:
+        lines.append(f"- 复合增速(CAGR): {m.growth_rate * 100:.1f}% ({m.growth_basis})")
+    if f.eps_series:
+        yrs = sorted(f.eps_series)
+        if len(yrs) >= 3:
+            span = yrs[-1] - yrs[0]
+            if span > 0 and f.eps_series[yrs[0]] > 0:
+                cagr = (f.eps_series[yrs[-1]] / f.eps_series[yrs[0]]) ** (1 / span) - 1
+                lines.append(f"- EPS 全序列 CAGR ({yrs[0]}→{yrs[-1]}): {cagr * 100:.1f}%")
+    if f.dividend_yield:
+        lines.append(f"- 当前股息率: {f.dividend_yield:.2f}%")
+    if f.pe_5y_avg is not None:
+        lines.append(f"- 5年历史均值 P/E: {f.pe_5y_avg:.1f}")
+    lines.append(f"- 代码初判林奇分类: {m.company_type}")
+    if m.growth_cap_warn:
+        lines.append("- ⚠️ 仍带超高增速紧箍咒标签，警惕分类退化")
+    return lines

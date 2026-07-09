@@ -21,6 +21,7 @@ def test_mechanical_blocks_show_when_no_ai():
     buckets = {BUCKET_FAST: [("META", "Meta", 0.53, "PEG合理", "快速增长型")]}
     reds = [("NUE", "Nucor", ["存货暴增"], "周期型")]
     out = render_briefing_summary(
+        mode="weekly",
         buckets=buckets, reds=reds, cycs=[], verdicts=[], ai_count=0, ai_mode=False,
     )
     assert "快速增长区" in out
@@ -35,6 +36,7 @@ def test_mechanical_blocks_hidden_when_ai_present():
     reds = [("NUE", "Nucor", ["存货暴增"], "周期型")]
     verdicts = [(0, "META", "Meta", "🟢 强烈买入", "#1e8449", "便宜", True, 0.5, 0.1)]
     out = render_briefing_summary(
+        mode="weekly",
         buckets=buckets, reds=reds, cycs=[], verdicts=verdicts, ai_count=3, ai_mode=True,
     )
     assert "快速增长区" not in out

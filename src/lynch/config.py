@@ -110,6 +110,7 @@ GROWTH_CAP_WARN_THRESHOLD = _env_float("GROWTH_CAP_WARN_THRESHOLD", 0.25)  # P2-
 INSTITUTIONAL_NEGLECT_MAX = _env_float("INSTITUTIONAL_NEGLECT_MAX", 0.40)  # 小数；<40% 为冷落
 INSIDER_LOOKBACK_DAYS = _env_int("INSIDER_LOOKBACK_DAYS", 180)
 INSIDER_MIN_NET_BUYS = _env_int("INSIDER_MIN_NET_BUYS", 2)
+DAILY_PRICE_CHANGE_THRESHOLD = _env_float("DAILY_PRICE_CHANGE_THRESHOLD", 0.04)  # 日报异动触发 4%
 
 # ── 第二层 AI 漏斗：成本熔断 ───────────────────────────────────
 # 每次最多调用 Gemini 做完整"四步叙述与裁决"的公司数量硬上限。
