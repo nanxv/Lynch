@@ -32,6 +32,7 @@ class LynchMetrics:
     is_financial: bool = False
     is_cyclical: bool = False
     sbi_tradable: bool = False
+    growth_cap_warn: bool = False  # P2-2：增速≥25% 紧箍咒
 
     def by_key(self, key: str) -> Metric | None:
         return next((m for m in self.metrics if m.key == key), None)
@@ -260,7 +261,7 @@ def _fcf_metric(f: Fundamentals) -> Metric:
 
 
 def compute_metrics(f: Fundamentals) -> LynchMetrics:
-    from .data.base import classify_company, is_cyclical, is_financial
+    from .data.base import classify_company, growth_cap_warn, is_cyclical, is_financial
 
     financial = is_financial(f)
     cyclical = is_cyclical(f)
@@ -282,6 +283,7 @@ def compute_metrics(f: Fundamentals) -> LynchMetrics:
         is_financial=financial,
         is_cyclical=cyclical,
         sbi_tradable=check_sbi_tradable_fundamentals(f),
+        growth_cap_warn=growth_cap_warn(f, cagr=growth_rate),
     )
 
 

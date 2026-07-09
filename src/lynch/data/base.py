@@ -234,14 +234,35 @@ def _cagr(series: dict[int, float]) -> float | None:
     return (last / first) ** (1 / span) - 1
 
 
+def growth_rate_for_classify(f: Fundamentals) -> float | None:
+    """分类用增速：优先 EPS CAGR，其次单季盈利同比。"""
+    growth = _cagr(f.eps_series)
+    if growth is None:
+        growth = f.earnings_growth_yoy
+    return growth
+
+
+def growth_cap_warn(f: Fundamentals, *, cagr: float | None = None) -> bool:
+    """P2-2：复合/近期增速 ≥25% 时打紧箍咒标签（仍属快速增长型主类）。"""
+    from . import config
+
+    threshold = config.GROWTH_CAP_WARN_THRESHOLD
+    g = cagr if cagr is not None else _cagr(f.eps_series)
+    if g is None:
+        g = _cagr(f.net_income_series)
+    if g is not None and g >= threshold:
+        return True
+    yoy = f.earnings_growth_yoy or f.revenue_growth_yoy
+    return yoy is not None and yoy >= threshold
+
+
 def classify_company(f: Fundamentals) -> str:
     """林奇六大类粗分：周期 > 困境反转 > 增速带（快/慢/稳）；隐蔽资产仅作附加提示不抢主类。
 
     LLM 周报会做权威复核。净现金厚 → 调用方可用 asset_play_hint，不再覆盖主类。
+    增速带：20%≤g<25% 与 g≥25% 均归快速增长型；后者另附 growth_cap_warn 标签（见 metrics）。
     """
-    growth = _cagr(f.eps_series)
-    if growth is None:
-        growth = f.earnings_growth_yoy
+    growth = growth_rate_for_classify(f)
     div = f.dividend_yield or 0.0  # 已是百分比
 
     # 1) 周期型：硬行业字典最高优先级

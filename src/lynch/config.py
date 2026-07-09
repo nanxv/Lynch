@@ -106,6 +106,7 @@ CYCLICAL_DIO_WORSEN_THRESHOLD = _env_float("CYCLICAL_DIO_WORSEN_THRESHOLD", 0.15
 GROWTH_STALL_DROP_RATIO = _env_float("GROWTH_STALL_DROP_RATIO", 0.70)  # 较两季前掉档 30%
 GROWTH_STALL_CAGR_FRACTION = _env_float("GROWTH_STALL_CAGR_FRACTION", 0.50)  # 低于 CAGR×此值
 STALWART_PE_VS_5Y_EXHAUST = _env_float("STALWART_PE_VS_5Y_EXHAUST", 1.25)
+GROWTH_CAP_WARN_THRESHOLD = _env_float("GROWTH_CAP_WARN_THRESHOLD", 0.25)  # P2-2 超高增速紧箍咒
 
 # ── 第二层 AI 漏斗：成本熔断 ───────────────────────────────────
 # 每次最多调用 Gemini 做完整"四步叙述与裁决"的公司数量硬上限。

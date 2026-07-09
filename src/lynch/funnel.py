@@ -232,22 +232,80 @@ def rank_and_cap(
     return held + priority + ai_rest, data_only
 
 
-def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple[bool, str]:
-    """判定是否为"值得深挖的优质股"（林奇式买入候选）。返回 (是否推荐, 一句理由)。
+# P2-6 简报多桶 ID
+BUCKET_FAST = "fast_grower"
+BUCKET_ASSET = "asset_play"
+BUCKET_TURNAROUND = "turnaround"
+BUCKET_DIVIDEND = "dividend_retirement"
 
-    条件：无致命红灯 且 (PEG 在 0~1 之间[估值被增长覆盖] 且 低负债 且 正自由现金流)。
-    """
+BUCKET_ORDER = (BUCKET_FAST, BUCKET_ASSET, BUCKET_TURNAROUND, BUCKET_DIVIDEND)
+
+
+def _net_cash_price_ratio(f: Fundamentals) -> float | None:
+    price = f.spot_price or f.price
+    if not price or price <= 0 or f.total_cash is None or not f.shares_outstanding:
+        return None
+    net_ps = (f.total_cash - (f.total_debt or 0)) / f.shares_outstanding
+    return net_ps / price
+
+
+def assign_briefing_bucket(
+    f: Fundamentals,
+    m: LynchMetrics,
+    fatal: list[str],
+) -> tuple[str | None, str]:
+    """将非 held 幸存者分入简报多桶之一；有 fatal 不进桶。返回 (桶ID, 一句理由)。"""
     if fatal:
-        return False, ""
+        return None, ""
+
     debt = m.by_key("debt")
     fcf = m.by_key("fcf")
     debt_ok = debt is not None and debt.flag == "green"
     fcf_ok = fcf is not None and fcf.flag == "green"
-    peg = m.peg
-    if peg is not None and 0 < peg <= 1.0 and debt_ok and fcf_ok:
-        tier = "极佳(PEG≤0.5)" if peg <= 0.5 else "合理"
-        return True, f"PEG {peg:.2f}·{tier}｜低负债｜正现金流"
-    return False, ""
+    nc_ratio = _net_cash_price_ratio(f)
+
+    if nc_ratio is not None and nc_ratio >= config.FUNNEL_MIN_NETCASH_RATIO:
+        return BUCKET_ASSET, f"每股净现金垫占股价 {nc_ratio:.0%}"
+
+    ctype = m.company_type
+
+    if ctype == "快速增长型":
+        peg = m.peg
+        if peg is not None and 0 < peg <= 1.0 and debt_ok and fcf_ok:
+            tier = "极佳(PEG≤0.5)" if peg <= 0.5 else "合理"
+            warn = "｜⚠️超高增速紧箍咒" if m.growth_cap_warn else ""
+            return BUCKET_FAST, f"PEG {peg:.2f}·{tier}｜低负债｜正现金流{warn}"
+
+    if ctype == "困境反转型":
+        parts: list[str] = ["困境反转候选"]
+        if f.earnings_growth_yoy is not None and f.earnings_growth_yoy < 0:
+            parts.append(f"盈利仍承压({f.earnings_growth_yoy:.0%})")
+        if (f.long_term_debt or 0) > 0:
+            parts.append("关注负债去化/现金回流")
+        return BUCKET_TURNAROUND, "｜".join(parts)
+
+    if ctype in ("缓慢增长型", "稳定增长型"):
+        div = f.dividend_yield or 0.0
+        from .metrics import pe_vs_5y_ratio
+
+        pvr = pe_vs_5y_ratio(f)
+        parts: list[str] = []
+        if div >= config.FUNNEL_MIN_DIV_YIELD:
+            parts.append(f"股息 {div:.1f}%")
+        elif div >= config.FUNNEL_STALWART_MIN_DIV_YIELD:
+            parts.append(f"股息 {div:.1f}%")
+        if pvr is not None and pvr <= config.FUNNEL_STALWART_PE_DISCOUNT:
+            parts.append(f"P/E 仅 5 年均值的 {pvr:.0%}")
+        if parts or ctype == "缓慢增长型":
+            return BUCKET_DIVIDEND, "｜".join(parts) if parts else "稳增/慢增股息养老候选"
+
+    return None, ""
+
+
+def is_quality_pick(f: Fundamentals, m: LynchMetrics, fatal: list[str]) -> tuple[bool, str]:
+    """判定快速增长区候选（PEG≤1 + 低负债 + 正 FCF）。保留兼容旧调用。"""
+    bucket, reason = assign_briefing_bucket(f, m, fatal)
+    return bucket == BUCKET_FAST, reason
 
 
 def fatal_warnings(

@@ -46,12 +46,17 @@ from src.lynch.config import correct_ticker  # noqa: E402
 from src.lynch.data.base import QuickScreen  # noqa: E402
 from src.lynch.fundamentals import FundamentalsError  # noqa: E402
 from src.lynch.funnel import (  # noqa: E402
+    BUCKET_ASSET,
+    BUCKET_DIVIDEND,
+    BUCKET_FAST,
+    BUCKET_ORDER,
+    BUCKET_TURNAROUND,
+    assign_briefing_bucket,
     check_daily_sniper_trigger,
     cyclical_top_warning,
     cyclical_watch,
     fatal_warnings,
     first_funnel,
-    is_quality_pick,
     rank_and_cap,
 )
 from src.lynch.history import (  # noqa: E402
@@ -357,7 +362,7 @@ def main() -> int:
     entries: list[tuple[int, int, str, bool]] = []
     verdicts: list[tuple[int, str, str, str, str, str, bool]] = []
     reds: list[tuple[str, str, list[str]]] = []
-    recs: list[tuple[str, str, float | None, str]] = []
+    buckets: dict[str, list[tuple]] = {k: [] for k in BUCKET_ORDER}
     cycs: list[tuple[str, str, str]] = []
     cyc_tops: list[tuple[str, str, str]] = []
     held_items: list[tuple[str, str, str, list[str], str]] = []
@@ -421,13 +426,24 @@ def main() -> int:
                         display_fw.append(dio_tail)
                     if pe_anchor:
                         display_fw.append(pe_anchor)
-            ok, reason = is_quality_pick(a.fundamentals, a.metrics, fw)
-            if ok and not is_held:
-                recs.append((
+            bucket, bucket_reason = assign_briefing_bucket(a.fundamentals, a.metrics, fw)
+            if bucket and not is_held:
+                sort_key = a.metrics.peg
+                if bucket == BUCKET_ASSET:
+                    cash = a.fundamentals.total_cash or 0
+                    debt = a.fundamentals.total_debt or 0
+                    sh = a.fundamentals.shares_outstanding or 1
+                    price = a.fundamentals.spot_price or a.fundamentals.price or 1
+                    sort_key = -((cash - debt) / sh / price)
+                elif bucket == BUCKET_DIVIDEND:
+                    sort_key = -(a.fundamentals.dividend_yield or 0)
+                elif bucket == BUCKET_TURNAROUND:
+                    sort_key = a.fundamentals.earnings_growth_yoy or 0
+                buckets[bucket].append((
                     q.ticker,
                     display_name,
-                    a.metrics.peg,
-                    _enrich_cyclical_reason(a, reason),
+                    sort_key,
+                    _enrich_cyclical_reason(a, bucket_reason),
                     a.metrics.company_type,
                 ))
             if not fw and not is_held:
@@ -532,9 +548,18 @@ def main() -> int:
 
     verdicts.sort(key=lambda v: v[0])
 
-    # 优质股按 PEG 从低到高排序，最多展示 20 只
-    recs.sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
-    recs = recs[:20]
+    for bid in BUCKET_ORDER:
+        if bid == BUCKET_FAST:
+            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+        elif bid == BUCKET_ASSET:
+            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+        elif bid == BUCKET_DIVIDEND:
+            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+        else:
+            buckets[bid].sort(key=lambda r: r[0])
+        buckets[bid] = buckets[bid][:20]
+
+    bucket_total = sum(len(v) for v in buckets.values())
 
     date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
     subject = f"{SUBJECT_PREFIX.get(args.mode, SUBJECT_PREFIX['daily'])} - {date_str}"
@@ -548,8 +573,8 @@ def main() -> int:
         buy_count_all = sum(1 for v in verdicts if v[0] == 0)
         if buy_count_all:
             tags.append(f"🧠{buy_count_all}只强买")
-    if recs:
-        tags.append(f"🟢{len(recs)}只优质")
+    if bucket_total:
+        tags.append(f"🟢{bucket_total}只候选")
     if reds:
         tags.append(f"🔴{len(reds)}只排雷")
     if cycs:
@@ -561,7 +586,7 @@ def main() -> int:
 
     top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
     top_block += notify.render_briefing_summary(
-        recs=recs,
+        buckets=buckets,
         reds=reds,
         cycs=cycs,
         cyc_tops=cyc_tops,

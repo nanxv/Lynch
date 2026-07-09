@@ -175,6 +175,68 @@ def render_red_flag_block(reds: list[tuple]) -> str:
 
 
 def render_recommend_block(recs: list[tuple]) -> str:
+    """已废弃：请用 render_multi_bucket_briefing。保留供旧测试兼容。"""
+    buckets: dict[str, list[tuple]] = {}
+    for row in recs:
+        buckets.setdefault("fast_grower", []).append(row)
+    return render_multi_bucket_briefing(buckets)
+
+
+_BUCKET_SPECS: dict[str, tuple[str, str, str, str]] = {
+    "fast_grower": ("🚀", "快速增长区", "PEG极佳·低负债·正现金流", "#1e8449"),
+    "asset_play": ("💎", "隐蔽资产区", "净现金厚垫", "#117a65"),
+    "turnaround": ("🩹", "困境反转区", "债务骤降/现金回流", "#884ea0"),
+    "dividend_retirement": ("🐢", "股息养老区", "高股息或估值错杀", "#2874a6"),
+}
+
+
+def render_multi_bucket_briefing(buckets: dict[str, list[tuple]]) -> str:
+    """P2-6 多桶分类简报：非 held 幸存者按林奇分类分轨展示；空桶自动隐藏。
+
+    每桶行格式：(ticker, name, sort_key, reason[, company_type])
+    """
+    from .funnel import BUCKET_ORDER
+
+    parts: list[str] = []
+    total = 0
+    for bid in BUCKET_ORDER:
+        rows = buckets.get(bid, [])
+        if not rows:
+            continue
+        total += len(rows)
+        icon, title, subtitle, color = _BUCKET_SPECS[bid]
+        lines = [
+            f"> ## {icon} {title}（{len(rows)}只 · {subtitle}）",
+            ">",
+        ]
+        for row in rows:
+            ticker, name, _sort, reason = row[0], row[1], row[2], row[3]
+            company_type = row[4] if len(row) > 4 else None
+            label = format_ticker_with_category(ticker, name, company_type)
+            lines.append(f'> - <b style="color:{color}">{icon} {label}</b>：{reason}')
+        lines.append(">")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        parts.append("\n".join(lines))
+
+    if not parts:
+        return (
+            "> ## 📂 多赛道雷达\n>\n"
+            "> 本次扫描暂无符合分桶条件的非持仓幸存者。宁可空仓，不追贵股。\n\n"
+            "---\n\n"
+        )
+    header = (
+        f"> ## 📂 多赛道雷达（共 {total} 只 · 分类分桶）\n"
+        ">\n"
+        "> *废除单一「优质股」大框；按林奇六类逻辑分轨展示候选。*\n"
+        ">\n"
+        "---\n\n"
+    )
+    return header + "".join(parts)
+
+
+def render_recommend_block_legacy(recs: list[tuple]) -> str:
     """置顶「🟢 推荐深挖的优质股」。recs: (ticker, name, peg, reason[, company_type])"""
     if not recs:
         return (
@@ -264,7 +326,8 @@ def render_held_consultation_block(
 
 def render_briefing_summary(
     *,
-    recs: list[tuple],
+    buckets: dict[str, list[tuple]] | None = None,
+    recs: list[tuple] | None = None,
     reds: list[tuple],
     cycs: list[tuple[str, str, str]],
     cyc_tops: list[tuple[str, str, str]] | None = None,
@@ -275,7 +338,12 @@ def render_briefing_summary(
     """简报置顶区：AI 在场时隐藏机械雷达，直接展示裁决看板。"""
     parts: list[str] = []
     if ai_count == 0:
-        parts.append(render_recommend_block(recs))
+        if buckets is not None:
+            parts.append(render_multi_bucket_briefing(buckets))
+        elif recs:
+            parts.append(render_recommend_block(recs))
+        else:
+            parts.append(render_multi_bucket_briefing({}))
         parts.append(render_red_flag_block(reds))
     parts.append(render_dual_track_verdict_dashboard(
         verdicts,

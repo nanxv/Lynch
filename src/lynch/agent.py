@@ -96,6 +96,8 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
         tags.append("金融股（负债排雷已豁免）")
     if m.is_cyclical:
         tags.append("周期股（高P/E与利润下滑排雷已豁免，反向判定）")
+    if m.growth_cap_warn:
+        tags.append("growth_cap_warn（历史增速≥25%，紧箍咒）")
     lines.append(" | ".join(tags))
     lines.append(f"现价(spot): {_fmt(f.spot_price or f.price)} {cur or ''} | 市值: {_fmt(f.market_cap, money=True, currency=cur)}")
     if f.valuation_anchor_price is not None:
