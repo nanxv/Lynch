@@ -445,6 +445,7 @@ def main() -> int:
                     sort_key,
                     _enrich_cyclical_reason(a, bucket_reason),
                     a.metrics.company_type,
+                    a.metrics.ultimate_alpha,
                 ))
             if not fw and not is_held:
                 cyc = cyclical_watch(a.fundamentals, a.metrics)

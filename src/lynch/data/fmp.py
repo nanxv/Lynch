@@ -29,6 +29,7 @@ from .fmp_cache import (
     save_static_cache,
 )
 from .fmp_whale import analyze_whale_signals, get_institutional_snapshots
+from .fmp_alpha import attach_alpha_intel
 from .granularity import format_annual_block, format_monthly_block, format_quarterly_block
 
 log = logging.getLogger(__name__)
@@ -1387,11 +1388,14 @@ class FmpProvider(BaseDataProvider):
             log.warning("巨鳄雷达跳过 %s: %s", sym, exc)
             whale_brief, whale_block = "", ""
 
+        alpha_updates = attach_alpha_intel(_api, sym)
+
         base = dataclasses.replace(
             base,
             recent_news_block=news_block,
             whale_alert_block=whale_block,
             whale_alert_brief=whale_brief,
+            **{k: v for k, v in alpha_updates.items() if k in Fundamentals.__dataclass_fields__},
         )
         return _finalize_fmp(base, bundle, mode=mode)
 

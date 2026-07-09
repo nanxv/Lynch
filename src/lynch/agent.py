@@ -8,7 +8,7 @@ from . import knowledge, llm
 from .cyclical import cyclical_data_block_lines
 from .data import Fundamentals, get_provider
 from .data.base import BaseDataProvider
-from .metrics import LynchMetrics, compute_metrics, held_discipline_prompt_append, pe_vs_5y_ratio
+from .metrics import LynchMetrics, compute_metrics, held_discipline_prompt_append, alpha_intel_lines, pe_vs_5y_ratio
 from .prompt import SYSTEM_PROMPT
 from .watchlist import normalize_user_status
 
@@ -73,6 +73,14 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
         lines.append("---")
         lines.append("")
 
+    alpha_lines = alpha_intel_lines(f, m)
+    if alpha_lines:
+        lines.append("【林奇筹码面 Alpha 探针】")
+        lines.extend(alpha_lines)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     # 模式专属高敏数据置顶（季/月/年会诊的权威口径）
     if f.granularity_block:
         lines.append(f.granularity_block)
@@ -98,6 +106,12 @@ def build_data_block(f: Fundamentals, m: LynchMetrics) -> str:
         tags.append("周期股（高P/E与利润下滑排雷已豁免，反向判定）")
     if m.growth_cap_warn:
         tags.append("growth_cap_warn（历史增速≥25%，紧箍咒）")
+    if m.institutional_neglect:
+        tags.append("institutional_neglect（机构冷落<40%）")
+    if m.insider_net_buying:
+        tags.append("insider_net_buying（内部人净买入）")
+    if m.ultimate_alpha:
+        tags.append("ultimate_alpha（终极 Alpha 双响炮）")
     lines.append(" | ".join(tags))
     lines.append(f"现价(spot): {_fmt(f.spot_price or f.price)} {cur or ''} | 市值: {_fmt(f.market_cap, money=True, currency=cur)}")
     if f.valuation_anchor_price is not None:

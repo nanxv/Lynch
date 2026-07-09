@@ -193,7 +193,7 @@ _BUCKET_SPECS: dict[str, tuple[str, str, str, str]] = {
 def render_multi_bucket_briefing(buckets: dict[str, list[tuple]]) -> str:
     """P2-6 多桶分类简报：非 held 幸存者按林奇分类分轨展示；空桶自动隐藏。
 
-    每桶行格式：(ticker, name, sort_key, reason[, company_type])
+    每桶行格式：(ticker, name, sort_key, reason[, company_type[, ultimate_alpha]])
     """
     from .funnel import BUCKET_ORDER
 
@@ -212,8 +212,12 @@ def render_multi_bucket_briefing(buckets: dict[str, list[tuple]]) -> str:
         for row in rows:
             ticker, name, _sort, reason = row[0], row[1], row[2], row[3]
             company_type = row[4] if len(row) > 4 else None
+            ultimate = row[5] if len(row) > 5 else False
             label = format_ticker_with_category(ticker, name, company_type)
-            lines.append(f'> - <b style="color:{color}">{icon} {label}</b>：{reason}')
+            alpha_badge = " **[🌟 终极 Alpha 标的]**" if ultimate else ""
+            lines.append(
+                f'> - <b style="color:{color}">{icon} {label}</b>{alpha_badge}：{reason}'
+            )
         lines.append(">")
         lines.append("")
         lines.append("---")

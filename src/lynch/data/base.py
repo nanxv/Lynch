@@ -85,6 +85,11 @@ class Fundamentals:
     whale_alert_block: str = ""
     whale_alert_brief: str = ""  # 简报前置一行，如 [🚨 政要异动] ...
 
+    # ── Phase 4 筹码面 Alpha 探针 ──
+    insider_buy_count: int = 0
+    insider_sell_count: int = 0
+    insider_net_buy_signal: bool = False
+
 
 @dataclass(frozen=True)
 class QuickScreen:

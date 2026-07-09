@@ -33,6 +33,9 @@ class LynchMetrics:
     is_cyclical: bool = False
     sbi_tradable: bool = False
     growth_cap_warn: bool = False  # P2-2：增速≥25% 紧箍咒
+    institutional_neglect: bool = False  # P4：机构持股 <40%
+    insider_net_buying: bool = False  # P4：内部人净买入
+    ultimate_alpha: bool = False  # P4：冷落 + 内部人买入双响炮
 
     def by_key(self, key: str) -> Metric | None:
         return next((m for m in self.metrics if m.key == key), None)
@@ -274,6 +277,7 @@ def compute_metrics(f: Fundamentals) -> LynchMetrics:
         _net_cash_metric(f),
         _fcf_metric(f),
     ]
+    neglect, insider, ultimate = evaluate_alpha_flags(f)
     return LynchMetrics(
         growth_rate=growth_rate,
         growth_basis=basis,
@@ -284,7 +288,41 @@ def compute_metrics(f: Fundamentals) -> LynchMetrics:
         is_cyclical=cyclical,
         sbi_tradable=check_sbi_tradable_fundamentals(f),
         growth_cap_warn=growth_cap_warn(f, cagr=growth_rate),
+        institutional_neglect=neglect,
+        insider_net_buying=insider,
+        ultimate_alpha=ultimate,
     )
+
+
+def evaluate_alpha_flags(f: Fundamentals) -> tuple[bool, bool, bool]:
+    """P4 筹码面：机构冷落、内部人净买入、终极 Alpha（二者兼备）。"""
+    from . import config
+
+    neglect = (
+        f.held_percent_institutions is not None
+        and f.held_percent_institutions < config.INSTITUTIONAL_NEGLECT_MAX
+    )
+    insider = f.insider_net_buy_signal
+    return neglect, insider, neglect and insider
+
+
+def alpha_intel_lines(f: Fundamentals, m: LynchMetrics) -> list[str]:
+    """供 data_block 使用的 Alpha 探针文本行。"""
+    lines: list[str] = []
+    if m.institutional_neglect and f.held_percent_institutions is not None:
+        pct = f.held_percent_institutions * 100
+        lines.append(
+            f"[🏆 机构冷落/潜在 Alpha] 机构持股仅 {pct:.1f}%（<40%），"
+            "华尔街尚未充分发掘，存在价值重估空间"
+        )
+    if m.insider_net_buying:
+        net = max(f.insider_buy_count - f.insider_sell_count, 0)
+        lines.append(
+            f"[💰 内部人动向：近期 {net} 笔净买入"
+            f"（买{f.insider_buy_count}/卖{f.insider_sell_count}），"
+            "高管正在用真金白银投票]"
+        )
+    return lines
 
 
 def _quarterly_yoy_series(f: Fundamentals) -> list[float]:
