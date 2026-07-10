@@ -1,9 +1,19 @@
-"""三层漏斗单元测试：Flash JSON 解析 + Layer3 名额选择 + 短评表渲染。"""
+"""三层漏斗单元测试：Flash JSON 解析 + Layer3 名额选择 + 短评表渲染 + 集成 mock。"""
 
 from __future__ import annotations
 
-from src.lynch.agent import FlashMicroScore, parse_flash_micro_json, select_layer3_tickers
+from unittest.mock import MagicMock, patch
+
+from src.lynch.agent import (
+    FlashMicroScore,
+    LynchAnalysis,
+    compute_layer3_flash_top_n,
+    parse_flash_micro_json,
+    select_layer3_tickers,
+)
+from src.lynch.data.base import QuickScreen
 from src.lynch.notify import render_flash_shortlist_table
+from src.lynch.three_layer import run_layer2_and_select_layer3, run_layer3_pro
 
 
 def test_parse_flash_micro_json_clean():
@@ -59,3 +69,73 @@ def test_render_flash_shortlist_table():
     assert "| 代码 | 林奇分类 |" in md
     # higher score first
     assert md.index("AAA") < md.index("BBB")
+
+
+def test_compute_layer3_flash_top_n():
+    assert compute_layer3_flash_top_n(3) == 10  # min(10, 50-3-5=42)
+    assert compute_layer3_flash_top_n(46) == 0  # min(10, -1) -> 0 flash slots
+    held = {"H1", "H2", "H3"}
+    scores = [FlashMicroScore(f"F{i}", f"F{i}", "快增", 90 - i, "x") for i in range(5)]
+    out = select_layer3_tickers(held, scores)
+    assert out[:3] == ["H1", "H2", "H3"] or set(out[:3]) == held
+    assert len(out) == 3 + min(len(scores), compute_layer3_flash_top_n(3))
+
+
+def test_parse_flash_micro_json_removeprefix_chain():
+    raw = '```json\n{"ticker":"X","lynch_score":66,"one_liner":"测试"}\n```'
+    s = parse_flash_micro_json(raw, ticker="X", name="X", company_type="—")
+    assert s.parse_ok
+    assert s.lynch_score == 66
+
+
+@patch("src.lynch.three_layer.llm.is_configured", return_value=True)
+@patch("src.lynch.three_layer.flash_micro_score")
+@patch("src.lynch.three_layer.analyze_company")
+def test_three_layer_mock_3_held_5_nonheld(mock_analyze, mock_flash, _mock_llm_ok):
+    """微型集成：3 held + 5 非 held → L3 队列含 held 且 Pro 被调用。"""
+    held = ("ACGL", "PTC", "RKLB")
+    nonheld = ("AAA", "BBB", "CCC", "DDD", "EEE")
+    watch = {
+        t: (t, "", "held" if t in held else "watch") for t in (*held, *nonheld)
+    }
+    working = [
+        QuickScreen(ticker=t, name=t, is_priority=(t in held), is_held=(t in held), user_status="held" if t in held else "watch")
+        for t in (*held, *nonheld)
+    ]
+
+    def fake_analyze(ticker, **kwargs):
+        data_only = kwargs.get("data_only", True)
+        f = MagicMock()
+        f.ticker = ticker
+        f.name = ticker
+        m = MagicMock()
+        m.company_type = "快速增长型"
+        m.metrics = []
+        narrative = None if data_only else f"【行动指令】钝感持有 (HOLD)：mock {ticker}"
+        return LynchAnalysis(ticker=ticker, fundamentals=f, metrics=m, data_block="block", narrative=narrative)
+
+    mock_analyze.side_effect = fake_analyze
+    mock_flash.side_effect = lambda a: FlashMicroScore(
+        a.ticker, a.fundamentals.name, a.metrics.company_type,
+        {"AAA": 90, "BBB": 80, "CCC": 70, "DDD": 60, "EEE": 50}[a.ticker],
+        "flash ok",
+    )
+
+    provider = MagicMock()
+    tl = run_layer2_and_select_layer3(working, watch, provider, report_mode="weekly")
+    assert len(tl.layer3_queue) >= 3
+    assert all(h in tl.layer3_queue for h in held)
+    assert "AAA" in tl.layer3_queue
+
+    pro_calls: list[str] = []
+    real_analyze = mock_analyze.side_effect
+
+    def track_pro(ticker, **kwargs):
+        if not kwargs.get("data_only", True):
+            pro_calls.append(ticker)
+        return real_analyze(ticker, **kwargs)
+
+    mock_analyze.side_effect = track_pro
+    out = run_layer3_pro(tl.layer3_queue, watch, provider, prior_analyses=tl.analyses)
+    assert len(pro_calls) == len(tl.layer3_queue)
+    assert sum(1 for t in tl.layer3_queue if out[t.upper()].narrative) == len(tl.layer3_queue)

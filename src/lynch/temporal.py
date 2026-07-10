@@ -17,6 +17,17 @@ def _close_col(df: pd.DataFrame) -> str | None:
     return None
 
 
+def _align_datetime_index(idx, ts: pd.Timestamp) -> tuple[pd.DatetimeIndex, pd.Timestamp]:
+    """Normalize index/timestamp so comparisons work across tz-aware (e.g. .T) and naive series."""
+    idx = pd.DatetimeIndex(pd.to_datetime(idx))
+    ts = pd.Timestamp(ts)
+    if idx.tz is not None:
+        ts = ts.tz_localize(idx.tz) if ts.tz is None else ts.tz_convert(idx.tz)
+    elif ts.tz is not None:
+        idx = idx.tz_localize(ts.tz)
+    return idx, ts
+
+
 def implied_eps_ttm(price: float | None, trailing_pe: float | None) -> float | None:
     """由现价与 TTM P/E 反推 TTM EPS（用于历史价估值对齐）。"""
     if price and trailing_pe and trailing_pe > 0:
@@ -54,9 +65,8 @@ def price_on_date(hist: pd.DataFrame, target: pd.Timestamp) -> float | None:
     col = _close_col(hist)
     if col is None or hist.empty:
         return None
-    idx = hist.index
-    if not isinstance(idx, pd.DatetimeIndex):
-        idx = pd.to_datetime(idx)
+    idx = pd.DatetimeIndex(pd.to_datetime(hist.index))
+    target, _ = _align_datetime_index(idx, target)
     mask = idx <= target
     if not mask.any():
         return None
@@ -72,8 +82,11 @@ def avg_close_after_date(
     col = _close_col(hist)
     if col is None or hist.empty:
         return None
-    idx = pd.to_datetime(hist.index)
-    after = hist[idx >= as_of]
+    idx = pd.DatetimeIndex(pd.to_datetime(hist.index))
+    idx, as_of = _align_datetime_index(idx, as_of)
+    after = hist.copy()
+    after.index = idx
+    after = after[idx >= as_of]
     if after.empty:
         return None
     closes = after[col].dropna().head(trading_days)

@@ -8,10 +8,12 @@ from .agent import (
     FlashMicroScore,
     LynchAnalysis,
     analyze_company,
+    compute_layer3_flash_top_n,
     flash_micro_score,
     select_layer3_tickers,
 )
 from . import config, llm
+from .config import correct_ticker
 from .data.base import QuickScreen
 from .fundamentals import FundamentalsError
 from .llm import LLMError
@@ -24,8 +26,13 @@ class ThreeLayerResult:
     analyses: dict[str, LynchAnalysis]  # 全部 L1 幸存者的硬指标分析（data_only 或 Pro）
     flash_scores: list[FlashMicroScore]
     layer3_tickers: set[str]
+    layer3_queue: list[str]  # held + Flash TopN，保序合并队列
     flash_table_rows: list[tuple[str, str, int, str]]  # 未进 L3
     counts: dict[str, int]
+
+
+def _ticker_key(ticker: str) -> str:
+    return correct_ticker(ticker).upper()
 
 
 def run_layer2_and_select_layer3(
@@ -51,7 +58,7 @@ def run_layer2_and_select_layer3(
         name, note, user_status = watch.get(q.ticker, (q.name or q.ticker, "", "watch"))
         is_held = normalize_user_status(user_status) == "held"
         if is_held:
-            held_tickers.add(q.ticker.upper())
+            held_tickers.add(_ticker_key(q.ticker))
         try:
             # L1 已过；此处拉全量硬指标（不调长文 LLM）
             a = analyze_company(
@@ -62,7 +69,7 @@ def run_layer2_and_select_layer3(
                 user_status=user_status,
                 report_mode=report_mode,
             )
-            analyses[a.ticker.upper()] = a
+            analyses[_ticker_key(a.ticker)] = a
             counts["analyzed"] += 1
             counts["data_only"] += 1
 
@@ -91,17 +98,21 @@ def run_layer2_and_select_layer3(
         except Exception as exc:  # noqa: BLE001
             print(f"  ❌ L2 {q.ticker} 意外：{exc}")
 
-    layer3_list = select_layer3_tickers(held_tickers, flash_scores)
-    layer3 = {t.upper() for t in layer3_list}
+    flash_top_n = compute_layer3_flash_top_n(len(held_tickers))
+    layer3_list = select_layer3_tickers(
+        held_tickers, flash_scores, held_count=len(held_tickers),
+    )
+    layer3 = {_ticker_key(t) for t in layer3_list}
     print(
         f"\n🎯 L3 Pro 终审名额 {len(layer3)} 只"
-        f"（held={len(held_tickers)} + Flash Top{config.LAYER3_FLASH_TOP_N}）"
+        f"（held={len(held_tickers)} + Flash Top{flash_top_n}"
+        f"｜配额公式 max(0,{config.LAYER3_PRO_TOTAL_BUDGET}-held-{config.LAYER3_PRO_RESERVED})）"
         f"：{', '.join(layer3_list)}\n"
     )
 
     flash_table_rows: list[tuple[str, str, int, str]] = []
     for s in flash_scores:
-        if s.ticker.upper() in layer3:
+        if _ticker_key(s.ticker) in layer3:
             continue
         flash_table_rows.append(
             (s.ticker, s.company_type or "—", int(s.lynch_score), s.one_liner or "")
@@ -111,31 +122,37 @@ def run_layer2_and_select_layer3(
         analyses=analyses,
         flash_scores=flash_scores,
         layer3_tickers=layer3,
+        layer3_queue=layer3_list,
         flash_table_rows=flash_table_rows,
         counts=counts,
     )
 
 
 def run_layer3_pro(
-    layer3_tickers: set[str],
+    layer3_queue: list[str],
     watch: dict[str, tuple[str, str, str]],
     provider,
     *,
     report_mode: str = "weekly",
     prior_analyses: dict[str, LynchAnalysis] | None = None,
 ) -> dict[str, LynchAnalysis]:
-    """对 L3 名单强制 Pro 深度会诊。"""
+    """对 L3 合并队列（held + Flash TopN）强制 Pro 深度会诊。"""
     out: dict[str, LynchAnalysis] = dict(prior_analyses or {})
     if not llm.is_configured():
+        print("⚠️  未配置 GEMINI_API_KEY，跳过 L3 Pro 终审。")
+        return out
+    if not layer3_queue:
+        print("⚠️  L3 Pro 队列为空（不应发生：held 应始终入队）。")
         return out
 
-    for ticker in sorted(layer3_tickers):
-        name, note, user_status = watch.get(
-            ticker, (ticker, "", "held" if ticker in layer3_tickers else "watch")
-        )
-        # watch keys may be mixed case
+    pro_model = config.GEMINI_PRO_MODEL
+    print(f"🎩 L3 Pro 队列 {len(layer3_queue)} 只 → `{pro_model}`\n")
+
+    for raw_ticker in layer3_queue:
+        ticker = _ticker_key(raw_ticker)
+        name, note, user_status = (ticker, "", "held")
         for k, v in watch.items():
-            if k.upper() == ticker:
+            if _ticker_key(k) == ticker:
                 name, note, user_status = v
                 break
         story_ctx = ""
@@ -152,13 +169,13 @@ def run_layer3_pro(
                 ticker,
                 user_note=note,
                 data_only=False,
-                model=config.GEMINI_PRO_MODEL,
+                model=pro_model,
                 provider=provider,
                 user_status=user_status,
                 story_diff_context=story_ctx,
                 report_mode=report_mode,
             )
-            out[a.ticker.upper()] = a
+            out[_ticker_key(a.ticker)] = a
             print(f"  🎩 L3 Pro {a.ticker} 会诊完成")
         except (FundamentalsError, LLMError) as exc:
             print(f"  ❌ L3 {ticker}: {exc}")

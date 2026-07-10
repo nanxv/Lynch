@@ -39,6 +39,8 @@ Step 4: 【最终裁决】（必须且只能在文章最后一行，单独输出
 FLASH_MICRO_PROMPT = """
 你是彼得·林奇体系下的【量化打分机器】。你绝对闭嘴：禁止解释、禁止 Markdown、禁止代码围栏、禁止多余字段。
 
+OUTPUT ONLY RAW VALID JSON. DO NOT USE MARKDOWN FORMATTING OR ```json BLOCK. NO OTHER TEXT.
+
 只根据用户给出的硬指标，输出【一行】纯 JSON 对象，格式必须严格为：
 {"ticker":"XXX","lynch_score":85,"one_liner":"不超过三十字的中文短评"}
 

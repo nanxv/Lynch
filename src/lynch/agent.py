@@ -287,18 +287,33 @@ def build_micro_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     return "\n".join(lines)
 
 
+def _clean_flash_json_text(text: str) -> str:
+    """榨出 Flash 模型回复中的裸 JSON（剥离 Markdown 围栏与首尾噪音）。"""
+    response_text = (text or "").strip()
+    response_text = (
+        response_text.removeprefix("```json")
+        .removeprefix("```")
+        .removesuffix("```")
+        .strip()
+    )
+    if "```" in response_text:
+        response_text = re.sub(r"```(?:json)?\s*", "", response_text)
+        response_text = response_text.replace("```", "").strip()
+    return response_text
+
+
 def parse_flash_micro_json(text: str, *, ticker: str, name: str, company_type: str) -> FlashMicroScore:
     """健壮解析 Flash 微评分 JSON；失败时降级为 score=0，不抛异常。"""
     raw = (text or "").strip()
     try:
-        cleaned = raw
-        if "```" in cleaned:
-            cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
-            cleaned = cleaned.replace("```", "")
-        match = re.search(r"\{[\s\S]*?\}", cleaned)
-        if not match:
-            raise ValueError("no json object")
-        data = json.loads(match.group(0))
+        cleaned = _clean_flash_json_text(raw)
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            match = re.search(r"\{[\s\S]*\}", cleaned)
+            if not match:
+                raise ValueError("no json object")
+            data = json.loads(match.group(0))
         score = int(data.get("lynch_score", 0))
         score = max(0, min(100, score))
         one = str(data.get("one_liner") or "").strip().replace("\n", " ")
@@ -380,24 +395,38 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
         )
 
 
+def compute_layer3_flash_top_n(held_count: int) -> int:
+    """海选进阶名额 = max(0, 总预算 - held数 - 保留名额)。held 另算，永不占用此名额。"""
+    dynamic = max(
+        0,
+        config.LAYER3_PRO_TOTAL_BUDGET - held_count - config.LAYER3_PRO_RESERVED,
+    )
+    cap = config.LAYER3_FLASH_TOP_N
+    if cap > 0:
+        return min(cap, dynamic)
+    return dynamic
+
+
 def select_layer3_tickers(
     held_tickers: set[str],
     flash_scores: list[FlashMicroScore],
     *,
     top_n: int | None = None,
+    held_count: int | None = None,
 ) -> list[str]:
-    """Layer 3 名额：全部 held + Flash 评分 Top N（去重保序）。"""
-    n = config.LAYER3_FLASH_TOP_N if top_n is None else top_n
+    """Layer 3 名额：全部 held + Flash 评分 Top N（去重保序，held 永不因配额为 0 被截断）。"""
+    hc = held_count if held_count is not None else len(held_tickers)
+    n = compute_layer3_flash_top_n(hc) if top_n is None else max(0, top_n)
     ranked = sorted(flash_scores, key=lambda s: (-s.lynch_score, s.ticker))
     out: list[str] = []
     seen: set[str] = set()
     for t in held_tickers:
-        tu = t.upper()
+        tu = config.correct_ticker(t).upper()
         if tu not in seen:
             seen.add(tu)
             out.append(tu)
-    for s in ranked[: max(0, n)]:
-        tu = s.ticker.upper()
+    for s in ranked[:n]:
+        tu = config.correct_ticker(s.ticker).upper()
         if tu not in seen:
             seen.add(tu)
             out.append(tu)

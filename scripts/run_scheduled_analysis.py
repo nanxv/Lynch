@@ -39,7 +39,7 @@ except Exception:  # noqa: BLE001
 
 from src.config_loader import load_config  # noqa: E402
 from src.lynch import analyze_company, config, get_provider, llm, notify  # noqa: E402
-from src.lynch.agent import LynchAnalysis  # noqa: E402
+from src.lynch.agent import LynchAnalysis, compute_layer3_flash_top_n  # noqa: E402
 from src.lynch.config import correct_ticker  # noqa: E402
 from src.lynch.data.base import QuickScreen  # noqa: E402
 from src.lynch.fundamentals import FundamentalsError  # noqa: E402
@@ -428,7 +428,7 @@ def build_briefing(
     if mode == "weekly":
         header.append(
             f"> 三层漏斗：L1机器硬筛 → L2 `{config.GEMINI_FLASH_MODEL}` 节食打分"
-            f" → L3 `{config.GEMINI_PRO_MODEL}` 终审（held+Top{config.LAYER3_FLASH_TOP_N}）"
+            f" → L3 `{config.GEMINI_PRO_MODEL}` 终审（held 全员 + Flash Top≤{compute_layer3_flash_top_n(0)}）"
         )
     if session_line:
         header.append(session_line)
@@ -542,7 +542,7 @@ def _run_weekly_three_layer(args, provider, working, watch, stats) -> int:
     tl = run_layer2_and_select_layer3(working, watch, provider, report_mode="weekly")
     print("🎩 启动 L3 Pro 首席终审…\n")
     analyses = run_layer3_pro(
-        tl.layer3_tickers, watch, provider,
+        tl.layer3_queue, watch, provider,
         report_mode="weekly", prior_analyses=tl.analyses,
     )
     counts = {
@@ -551,9 +551,9 @@ def _run_weekly_three_layer(args, provider, working, watch, stats) -> int:
         "flash": tl.counts.get("flash", 0),
         "data_only": tl.counts.get("data_only", 0),
     }
-    # L3 Pro 覆盖后，重新计数 ai
-    for t in tl.layer3_tickers:
-        a = analyses.get(t.upper())
+    # L3 Pro 覆盖后，重新计数 ai（按合并队列，held 必计）
+    for t in tl.layer3_queue:
+        a = analyses.get(correct_ticker(t).upper())
         if a and a.narrative:
             counts["ai"] += 1
 
@@ -567,10 +567,11 @@ def _run_weekly_three_layer(args, provider, working, watch, stats) -> int:
     held_detail_sections: list = []
 
     for seq, q in enumerate(working):
-        a = analyses.get(q.ticker.upper())
+        tk = correct_ticker(q.ticker).upper()
+        a = analyses.get(tk)
         if not a:
             continue
-        use_ai = q.ticker.upper() in tl.layer3_tickers and bool(a.narrative)
+        use_ai = tk in tl.layer3_tickers and bool(a.narrative)
         _ingest_analysis_into_boards(
             a, q=q, watch=watch, is_weekly_mode=True, is_held_report=False,
             use_ai=use_ai, seq=seq,

@@ -122,8 +122,10 @@ GEMINI_PRO_MODEL = _env_str("GEMINI_PRO_MODEL", "gemini-1.5-pro")
 # 免费档 RPM 防御：Flash≈15RPM → 4.5s；Pro≈2RPM → 32s
 GEMINI_FLASH_INTERVAL_SEC = _env_float("GEMINI_FLASH_INTERVAL_SEC", 4.5)
 GEMINI_PRO_INTERVAL_SEC = _env_float("GEMINI_PRO_INTERVAL_SEC", 32.0)
-# Layer 3：held 全员 + Flash 评分 Top N
-LAYER3_FLASH_TOP_N = _env_int("LAYER3_FLASH_TOP_N", 10)
+# Layer 3：held 全员 + Flash 评分 Top N（海选进阶名额 = max(0, TOTAL - held - RESERVED)）
+LAYER3_PRO_TOTAL_BUDGET = _env_int("LAYER3_PRO_TOTAL_BUDGET", 50)
+LAYER3_PRO_RESERVED = _env_int("LAYER3_PRO_RESERVED", 5)
+LAYER3_FLASH_TOP_N = _env_int("LAYER3_FLASH_TOP_N", 10)  # 0=仅用动态配额公式
 
 # ── 第二层 AI 漏斗（兼容旧路径 / monthly）：成本熔断 ───────────
 # 周报已改三层漏斗，不再用此上限截断 Flash 扫射。
