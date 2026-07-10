@@ -339,9 +339,10 @@ def render_mode_banner(mode: str) -> str:
             ">\n---\n\n"
         ),
         "weekly": (
-            "> ## 🌍 全境多桶雷达\n"
+            "> ## 🌍 全境三层漏斗雷达\n"
             ">\n"
-            "> *全市场漏斗幸存者｜多桶分类 + Alpha 探针 + 持仓独立会诊。*\n"
+            "> *L1 机器硬筛 → L2 Flash 节食打分 → L3 Pro 终审（held+Top10）"
+            "｜底部附全境海选短评榜。*\n"
             ">\n---\n\n"
         ),
         "quarterly": (
@@ -376,6 +377,35 @@ def render_daily_sniper_summary(
     lines.append(">")
     lines.append("")
     lines.append("---")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_flash_shortlist_table(
+    rows: list[tuple[str, str, int, str]],
+) -> str:
+    """第二梯队：🔍 全境海选短评榜单（Layer 2 未进 Layer 3）。
+
+    rows: (ticker, company_type, lynch_score, one_liner)
+    """
+    if not rows:
+        return ""
+    ranked = sorted(rows, key=lambda r: (-int(r[2]), r[0]))
+    lines = [
+        "",
+        "---",
+        "",
+        f"## 🔍 全境海选短评榜单（Flash Layer 2 · {len(ranked)}只未进 Pro 终审）",
+        "",
+        "*Token 节食扫射结果：仅 JSON 评分 + 一句话，无长文会诊。*",
+        "",
+        "| 代码 | 林奇分类 | 林奇评分 (Score) | 一句话简评 (One Liner) |",
+        "| --- | --- | ---: | --- |",
+    ]
+    for ticker, ctype, score, one in ranked:
+        safe_one = (one or "").replace("|", "/").replace("\n", " ")
+        safe_type = (ctype or "—").replace("|", "/")
+        lines.append(f"| {ticker} | {safe_type} | {int(score)} | {safe_one} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -434,13 +464,15 @@ def render_briefing_summary(
         return "".join(parts)
 
     # weekly / monthly：机械雷达 + 多桶 + 裁决看板
-    if ai_count == 0 and mode == "weekly":
+    if mode == "weekly":
         if buckets is not None:
             parts.append(render_multi_bucket_briefing(buckets))
         elif recs:
             parts.append(render_recommend_block(recs))
         else:
             parts.append(render_multi_bucket_briefing({}))
+        parts.append(render_red_flag_block(reds))
+    elif ai_count == 0 and mode == "monthly":
         parts.append(render_red_flag_block(reds))
     parts.append(render_dual_track_verdict_dashboard(
         verdicts,

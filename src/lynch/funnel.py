@@ -216,6 +216,7 @@ def rank_and_cap(
 
     is_held=True：影子持仓绝对特权，永远排第一且永不因 max_count 被截断。
     is_priority=True（必看列表）：永远进 AI 组，不占用 max_count 名额。
+    max_count<=0：不限名额，全部幸存者送 AI（慢但不漏）。
     """
     max_count = config.MAX_AI_ANALYSIS_COUNT if max_count is None else max_count
     held = [q for q in survivors if q.is_held]
@@ -225,10 +226,11 @@ def rank_and_cap(
         key=_sort_key,
     )
 
-    reserved = len(held) + len(priority)
-    slots_for_rest = max(0, max_count - reserved)
-    ai_rest = rest[:slots_for_rest]
-    data_only = rest[slots_for_rest:]
+    if max_count <= 0:
+        return held + priority + rest, []
+    # held/priority 不占用名额；max_count 只限制其余漏斗幸存者
+    ai_rest = rest[:max_count]
+    data_only = rest[max_count:]
     return held + priority + ai_rest, data_only
 
 

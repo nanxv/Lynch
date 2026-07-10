@@ -1,22 +1,31 @@
-"""Google Gemini 客户端封装（google-genai SDK）。"""
+"""Google Gemini 客户端封装（google-genai SDK）+ 免费档 RPM 节流。"""
 
 from __future__ import annotations
 
 import os
+import threading
+import time
 
+from . import config
 from .prompt import TASK_PROMPTS
 from .watchlist import normalize_user_status
+
 
 class LLMError(Exception):
     """LLM 调用失败或未配置时抛出。"""
 
 
-# 默认用 gemini-2.5-flash（快且省，追求深度推理可设 GEMINI_MODEL=gemini-2.5-pro）。
-# 注意：GitHub Actions 未配置的 secret 会注入为"空字符串"而非缺失，故用 `or` 兜底，
-# 避免空字符串导致 SDK 报 "model is required"。
-_FALLBACK_MODEL = "gemini-2.5-flash"
-DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip()
-SNIPER_DRILL_MAX_TOKENS = 2048  # 日间狙击「两分钟演练」专用上限
+# 官方稳定版（三层漏斗硬编码默认；可用环境变量覆盖）
+FLASH_MODEL = (os.getenv("GEMINI_FLASH_MODEL") or config.GEMINI_FLASH_MODEL).strip()
+PRO_MODEL = (os.getenv("GEMINI_PRO_MODEL") or config.GEMINI_PRO_MODEL).strip()
+_FALLBACK_MODEL = FLASH_MODEL or "gemini-1.5-flash"
+# 兼容旧 GEMINI_MODEL：未设则默认 Flash（节食）
+DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip() or _FALLBACK_MODEL
+SNIPER_DRILL_MAX_TOKENS = 2048
+FLASH_MICRO_MAX_TOKENS = 256
+
+_last_call_mono: dict[str, float] = {}
+_throttle_lock = threading.Lock()
 
 
 def build_task_prompt(mode: str, user_status: str = "watch") -> str:
@@ -35,9 +44,40 @@ def is_configured() -> bool:
     return bool(os.getenv("GEMINI_API_KEY"))
 
 
-def generate(system_prompt: str, user_content: str, *, model: str | None = None,
-             max_tokens: int = 8192) -> str:
-    """调用 Gemini 生成林奇式分析叙述。"""
+def is_pro_model(model: str) -> bool:
+    return "pro" in (model or "").lower()
+
+
+def interval_for_model(model: str) -> float:
+    if is_pro_model(model):
+        return float(config.GEMINI_PRO_INTERVAL_SEC)
+    return float(config.GEMINI_FLASH_INTERVAL_SEC)
+
+
+def throttle_for_model(model: str) -> None:
+    """免费档 RPM 防御：Flash 间隔 4.5s（≈15RPM），Pro 间隔 32s（≈2RPM）。"""
+    resolved = (model or DEFAULT_MODEL or _FALLBACK_MODEL).strip() or _FALLBACK_MODEL
+    gap = interval_for_model(resolved)
+    if gap <= 0:
+        return
+    with _throttle_lock:
+        now = time.monotonic()
+        last = _last_call_mono.get(resolved, 0.0)
+        wait = gap - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_mono[resolved] = time.monotonic()
+
+
+def generate(
+    system_prompt: str,
+    user_content: str,
+    *,
+    model: str | None = None,
+    max_tokens: int = 8192,
+    skip_throttle: bool = False,
+) -> str:
+    """调用 Gemini 生成内容（默认按模型节流；agent 可先 throttle 再 skip）。"""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise LLMError("未设置 GEMINI_API_KEY，无法生成 LLM 叙述（可用 --data-only 仅看硬指标）。")
@@ -48,8 +88,9 @@ def generate(system_prompt: str, user_content: str, *, model: str | None = None,
     except ImportError as exc:  # noqa: BLE001
         raise LLMError("未安装 google-genai 库，请先 pip install -r requirements.txt。") from exc
 
-    # 再兜底一次：确保绝不把空字符串/None 传给 SDK（否则报 "model is required"）。
     resolved_model = (model or DEFAULT_MODEL or _FALLBACK_MODEL).strip() or _FALLBACK_MODEL
+    if not skip_throttle:
+        throttle_for_model(resolved_model)
 
     client = genai.Client(api_key=api_key)
     try:

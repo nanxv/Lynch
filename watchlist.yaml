@@ -1,49 +1,84 @@
-# 影子持仓清单 — 与 NISA 账户同步（2026-07-06）
+# 影子持仓清单 — 与 NISA 账户同步（2026-07-09）
 # status: held=已持有底仓（季报/年报触发卖出铁律）/ watch=观望
 # 投信（eMAXIS 全世界·标普、SMT 黄金）不在 Lynch 单股扫描范围内
 #
 # 定时任务：watchlist 内所有标的不受 MARKET 过滤；全市场漏斗仍按 MARKET 变量。
 stocks:
-  # ── 美股（NISA 现物）──
+  # ── 美股（本人 NISA 现物）──
   - ticker: "ACGL"
     name: "Arch Capital Group"
     market: US
     tier: 1
     status: held
-    note: "NISA 1株 · 取得约101.30 USD"
+    note: "本人 NISA 1株 · 取得约101.30 USD"
 
   - ticker: "PTC"
     name: "PTC Inc"
     market: US
     tier: 1
     status: held
-    note: "NISA 1株 · 取得约122.72 USD"
+    note: "本人 NISA 1株 · 取得约122.72 USD"
 
   - ticker: "RKLB"
     name: "Rocket Lab"
     market: US
     tier: 1
     status: held
-    note: "NISA 5株 · 取得约105.91 USD"
+    note: "本人 NISA 5株 · 取得约105.91 USD"
 
-  # ── 日股（NISA 成长枠）──
+  - ticker: "SYF"
+    name: "Synchrony Financial"
+    market: US
+    tier: 1
+    status: held
+    note: "本人 NISA 1株 · 取得约72.90 USD"
+
+  # ── 日股（NISA 成长枠 · 本人 + 妻）──
   - ticker: "285A.T"
     name: "キオクシアHD"
     market: JP
     tier: 1
     status: held
-    note: "NISA 3株 · 取得40,368円"
+    note: "本人 NISA 3株 · 妻 NISA 1株"
+
+  - ticker: "3436.T"
+    name: "SUMCO"
+    market: JP
+    tier: 1
+    status: held
+    note: "妻 NISA 4株"
 
   - ticker: "4063.T"
     name: "信越化学"
     market: JP
     tier: 1
     status: held
-    note: "NISA 3株 · 取得7,050円"
+    note: "本人 NISA 3株 · 取得7,050円"
 
   - ticker: "5803.T"
     name: "フジクラ"
     market: JP
-    tier: 2
+    tier: 1
     status: held
-    note: "NISA 1株 · 取得5,321円"
+    note: "本人 NISA 1株 · 妻 NISA 4株"
+
+  - ticker: "6146.T"
+    name: "ディスコ"
+    market: JP
+    tier: 1
+    status: held
+    note: "妻 NISA 1株"
+
+  - ticker: "6504.T"
+    name: "富士電機"
+    market: JP
+    tier: 1
+    status: held
+    note: "妻 NISA 2株"
+
+  - ticker: "6857.T"
+    name: "アドバンテスト"
+    market: JP
+    tier: 1
+    status: held
+    note: "妻 NISA 1株"

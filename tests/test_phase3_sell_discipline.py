@@ -117,6 +117,25 @@ def test_rank_and_cap_held_never_dropped():
     assert ai[0].ticker == "PTC"
     assert held in ai
     assert held not in data_only
+    # held/priority 不占用名额 → 还应再收 3 只 rest
+    assert len([q for q in ai if q.ticker != "PTC"]) == 3
+    assert len(data_only) == 17
+
+
+def test_rank_and_cap_zero_means_unlimited():
+    qs = [QuickScreen(ticker=f"T{i}", quick_peg=float(i)) for i in range(10)]
+    ai, data_only = rank_and_cap(qs, max_count=0)
+    assert len(ai) == 10
+    assert data_only == []
+
+
+def test_rank_and_cap_priority_does_not_consume_slots():
+    priority = QuickScreen(ticker="WATCH", is_priority=True, quick_peg=9.0)
+    others = [QuickScreen(ticker=f"T{i}", quick_peg=0.1 * i) for i in range(5)]
+    ai, data_only = rank_and_cap([priority] + others, max_count=2)
+    assert priority in ai
+    assert len([q for q in ai if q.ticker != "WATCH"]) == 2
+    assert len(data_only) == 3
 
 
 def test_render_held_consultation_block():

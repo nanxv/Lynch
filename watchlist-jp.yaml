@@ -1,30 +1,50 @@
 # 日股备用 / 与 watchlist.yaml 中日股条目保持同步
-# 主清单已合并至 watchlist.yaml；本文件供手动 --tickers 或历史参考
 stocks:
   - ticker: "285A.T"
     name: "キオクシアHD"
     market: JP
     tier: 1
     status: held
-    note: "NISA 3株"
+    note: "本人 3株 · 妻 1株"
+
+  - ticker: "3436.T"
+    name: "SUMCO"
+    market: JP
+    tier: 1
+    status: held
+    note: "妻 NISA 4株"
 
   - ticker: "4063.T"
     name: "信越化学"
     market: JP
     tier: 1
     status: held
-    note: "NISA 3株"
+    note: "本人 NISA 3株"
 
   - ticker: "5803.T"
     name: "フジクラ"
     market: JP
-    tier: 2
+    tier: 1
     status: held
-    note: "NISA 1株"
+    note: "本人 1株 · 妻 4株"
 
-  - ticker: "6315.T"
-    name: "TOWA"
+  - ticker: "6146.T"
+    name: "ディスコ"
     market: JP
-    tier: 2
-    status: watch
-    note: "未持有 · 观察"
+    tier: 1
+    status: held
+    note: "妻 NISA 1株"
+
+  - ticker: "6504.T"
+    name: "富士電機"
+    market: JP
+    tier: 1
+    status: held
+    note: "妻 NISA 2株"
+
+  - ticker: "6857.T"
+    name: "アドバンテスト"
+    market: JP
+    tier: 1
+    status: held
+    note: "妻 NISA 1株"

@@ -264,6 +264,12 @@ def get_universe(
                 seen.add(ct)
                 universe.append(ct)
 
+    if "us_sbi" in sources and len([t for t in universe if not str(t).endswith(".T")]) < 1500:
+        print(
+            "⚠️  us_sbi 海选池偏少（<1500）。正常约 3000+；"
+            "请检查 FMP_API_KEY / 套餐 screener 配额，或是否设置了 MAX_UNIVERSE_SCAN 截断。"
+        )
+
     if cap and len(universe) > cap:
         print(f"ℹ️  海选池 {len(universe)} 只 > 上限 {cap}，截断到前 {cap} 只（防超时/封禁）。")
         universe = universe[:cap]

@@ -112,8 +112,23 @@ INSIDER_LOOKBACK_DAYS = _env_int("INSIDER_LOOKBACK_DAYS", 180)
 INSIDER_MIN_NET_BUYS = _env_int("INSIDER_MIN_NET_BUYS", 2)
 DAILY_PRICE_CHANGE_THRESHOLD = _env_float("DAILY_PRICE_CHANGE_THRESHOLD", 0.04)  # 日报异动触发 4%
 
-# ── 第二层 AI 漏斗：成本熔断 ───────────────────────────────────
-# 每次最多调用 Gemini 做完整"四步叙述与裁决"的公司数量硬上限。
+# ── 三层漏斗 · Gemini 不对称算力（免费档）────────────────────
+# Layer 2 扫射：Flash；Layer 3 / daily / 季年报终审：Pro
+GEMINI_FLASH_MODEL = _env_str("GEMINI_FLASH_MODEL", "gemini-1.5-flash")
+GEMINI_PRO_MODEL = _env_str("GEMINI_PRO_MODEL", "gemini-1.5-pro")
+# 兼容旧变量：未单独指定时默认 Flash（节食）
+# 注意：周报 L3 / 日报 / 季年报会强制 Pro，不受此默认影响。
+# （实际默认模型解析见 llm.py）
+# 免费档 RPM 防御：Flash≈15RPM → 4.5s；Pro≈2RPM → 32s
+GEMINI_FLASH_INTERVAL_SEC = _env_float("GEMINI_FLASH_INTERVAL_SEC", 4.5)
+GEMINI_PRO_INTERVAL_SEC = _env_float("GEMINI_PRO_INTERVAL_SEC", 32.0)
+# Layer 3：held 全员 + Flash 评分 Top N
+LAYER3_FLASH_TOP_N = _env_int("LAYER3_FLASH_TOP_N", 10)
+
+# ── 第二层 AI 漏斗（兼容旧路径 / monthly）：成本熔断 ───────────
+# 周报已改三层漏斗，不再用此上限截断 Flash 扫射。
+# 默认 30：monthly 等仍可按名额送 Pro。
+# 设为 0 = 不限。held / watchlist 优先级标的永不占用此名额。
 MAX_AI_ANALYSIS_COUNT = _env_int("MAX_AI_ANALYSIS_COUNT", 30)
 # 超额时的排序口径：peg(从低到高，最划算) / net_cash(从高到低，安全垫最厚)
 AI_SORT_KEY = _env_str("AI_SORT_KEY", "peg").lower()

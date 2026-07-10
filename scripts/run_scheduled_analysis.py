@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-"""彼得·林奇自动化流水线（GitHub Actions 后台，邮件版，双层漏斗）。
+"""彼得·林奇自动化流水线（GitHub Actions 后台，邮件版，三层不对称漏斗）。
 
 【立体化投研周期 · 四维分离】
-  --mode daily      日报：⚡ 深度异动狙击手（watchlist · 异动触发才发报）
-  --mode weekly     周报：🌍 全境多桶雷达（唯一允许 scope=full）
+  --mode daily      日报：⚡ 深度异动狙击手（watchlist · 异动触发 · Pro）
+  --mode weekly     周报：🌍 三层漏斗（L1 机器 → L2 Flash → L3 Pro）
   --mode monthly    月报：价量/RSI/PEG 漂移（watchlist）
-  --mode quarterly  季报：⚖️ 持仓生死拷问（仅 held）
-  --mode annual     年报：🧭 林奇逻辑重估（仅 held）
+  --mode quarterly  季报：⚖️ 持仓生死拷问（仅 held · Pro）
+  --mode annual     年报：🧭 林奇逻辑重估（仅 held · Pro）
 
-【双层漏斗 / 沙漏机制】（--scope full 时）：
-  全市场成分股(万级) → 第一层纯代码硬指标漏斗(刷掉95%) → 第二层 AI 上限熔断(≤MAX_AI_ANALYSIS_COUNT) → 邮件
+【三层漏斗】（--mode weekly --scope full）：
+  L1 机器硬筛 → L2 Flash JSON 打分（非 held 全员）→ L3 Pro（held+TopN）→ 邮件
 
-【必看列表】watchlist.yaml 降级为"高优先级必看列表"：永远纳入分析、永远优先送 AI。
+【必看列表】watchlist.yaml：held 永远进 Layer 3。
 
-所有凭证/参数均从系统环境变量读取（适配 GitHub Secrets）：
-  DATA_PROVIDER / MAX_AI_ANALYSIS_COUNT / UNIVERSE_SOURCES / MAX_UNIVERSE_SCAN / AI_SORT_KEY
-  GEMINI_API_KEY / GEMINI_MODEL
-  SMTP_SERVER / SMTP_PORT / SMTP_USERNAME / SMTP_PASSWORD / RECEIVER_EMAIL
+环境变量：DATA_PROVIDER / UNIVERSE_SOURCES / LAYER3_FLASH_TOP_N /
+  GEMINI_API_KEY / GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL / SMTP_*
 """
 
 from __future__ import annotations
@@ -87,6 +85,7 @@ from src.lynch.market_calendar import (  # noqa: E402
     expected_daily_session_date,
     should_run_daily_report,
 )
+from src.lynch.three_layer import run_layer2_and_select_layer3, run_layer3_pro  # noqa: E402
 from src.lynch.universe import get_universe  # noqa: E402
 from src.lynch.watchlist import list_avoided_tickers, normalize_user_status  # noqa: E402
 
@@ -306,6 +305,7 @@ def _run_daily_sniper(args, provider) -> int:
                 user_status=st,
                 report_mode="daily",
                 day_change=chg,
+                model=config.GEMINI_PRO_MODEL,
             )
             counts["analyzed"] += 1
             counts["ai" if ai_available else "data_only"] += 1
@@ -375,7 +375,10 @@ def _render_weekly(a: LynchAnalysis, priority: bool, signal_label: str = "") -> 
     if a.narrative:
         lines.append(a.narrative)
     else:
-        lines.append("> ⚠️ 未配置 GEMINI_API_KEY 或已超 AI 上限，仅硬指标。")
+        if llm.is_configured():
+            lines.append("> ℹ️ 本轮未送 Gemini（AI 名额已满或非优先标的），仅附硬指标。")
+        else:
+            lines.append("> ⚠️ 未配置 GEMINI_API_KEY，仅硬指标。")
         lines.append("")
         lines.append("```")
         lines.append(a.data_block)
@@ -402,12 +405,15 @@ def build_briefing(
     flat_sections: list[str] | None = None,
     us_session_date: str | None = None,
     provider_name: str = "yahoo (yfinance)",
+    flash_shortlist_md: str = "",
 ) -> str:
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M JST")
     title = MODE_TITLES.get(mode, "自选股监控日报")
     funnel = ""
     if stats.get("universe"):
-        funnel = f"｜ 漏斗 {stats['universe']}→{stats['survivors']}只"
+        funnel = f"｜ L1漏斗 {stats['universe']}→{stats['survivors']}只"
+    flash_n = counts.get("flash", 0)
+    pro_n = counts.get("ai", 0)
     session_line = ""
     if mode == "daily" and us_session_date:
         session_line = f"> 数据对齐：美东 **{us_session_date}** 收盘（NYSE 常规时段；休市日自动停报）"
@@ -415,17 +421,230 @@ def build_briefing(
         f"# 🎩 彼得·林奇 {title}",
         "",
         f"{date_str} ｜ 生成于 {now} ｜ 分析 {counts['analyzed']}只"
-        f"（AI {counts['ai']} / 仅硬指标 {counts['data_only']}）{funnel}",
+        f"（Pro {pro_n} / Flash {flash_n} / 仅硬指标 {counts['data_only']}）{funnel}",
         "",
         f"> 数据来源：{provider_name} ｜ 铁律：数据为王，不预测宏观，长线持有。",
     ]
+    if mode == "weekly":
+        header.append(
+            f"> 三层漏斗：L1机器硬筛 → L2 `{config.GEMINI_FLASH_MODEL}` 节食打分"
+            f" → L3 `{config.GEMINI_PRO_MODEL}` 终审（held+Top{config.LAYER3_FLASH_TOP_N}）"
+        )
     if session_line:
         header.append(session_line)
     header.extend(["", "---", ""])
     detail = notify.render_dual_track_detail_sections(
         main_sections, hardcore_sections, ai_mode=ai_mode, flat_sections=flat_sections,
     )
-    return "\n".join(header) + red_block + detail
+    return "\n".join(header) + red_block + detail + (flash_shortlist_md or "")
+
+
+
+def _ingest_analysis_into_boards(
+    a: LynchAnalysis,
+    *,
+    q: QuickScreen,
+    watch: dict,
+    is_weekly_mode: bool,
+    is_held_report: bool,
+    use_ai: bool,
+    seq: int,
+    reds, buckets, cycs, cyc_tops, held_items, held_detail_sections, entries, verdicts, counts,
+):
+    """把单只分析结果灌入排雷/多桶/裁决/详情结构。"""
+    name = watch.get(q.ticker, (q.name or q.ticker, "", "watch"))[0]
+    user_status = watch.get(q.ticker, ("", "", "watch"))[2]
+    is_held = normalize_user_status(user_status) == "held"
+    display_name = a.fundamentals.name or name
+    sbi_ok = a.metrics.sbi_tradable
+
+    try:
+        sig_hist = extract_signal(a.narrative) if a.narrative else None
+        append_record(record_from_analysis(
+            a.ticker,
+            a.metrics,
+            signal_label=sig_hist[1] if sig_hist else None,
+            signal_order=sig_hist[0] if sig_hist else None,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️  {q.ticker} 历史存档失败：{exc}")
+
+    fw = fatal_warnings(a.fundamentals, a.metrics, user_status=user_status)
+    if fw and not is_held:
+        display_fw = list(fw)
+        if a.metrics.is_cyclical:
+            dio_tail, pe_anchor = notify.cyclical_briefing_extras(a.fundamentals)
+            if dio_tail:
+                display_fw.append(dio_tail)
+            if pe_anchor:
+                display_fw.append(pe_anchor)
+        reds.append((q.ticker, display_name, display_fw, a.metrics.company_type))
+    bucket, bucket_reason = None, ""
+    if is_weekly_mode:
+        bucket, bucket_reason = assign_briefing_bucket(a.fundamentals, a.metrics, fw)
+    if is_weekly_mode and bucket and not is_held:
+        sort_key = a.metrics.peg
+        if bucket == BUCKET_ASSET:
+            cash = a.fundamentals.total_cash or 0
+            debt = a.fundamentals.total_debt or 0
+            sh = a.fundamentals.shares_outstanding or 1
+            price = a.fundamentals.spot_price or a.fundamentals.price or 1
+            sort_key = -((cash - debt) / sh / price)
+        elif bucket == BUCKET_DIVIDEND:
+            sort_key = -(a.fundamentals.dividend_yield or 0)
+        elif bucket == BUCKET_TURNAROUND:
+            sort_key = a.fundamentals.earnings_growth_yoy or 0
+        buckets[bucket].append((
+            q.ticker, display_name, sort_key,
+            _enrich_cyclical_reason(a, bucket_reason),
+            a.metrics.company_type, a.metrics.ultimate_alpha,
+        ))
+    if is_weekly_mode and not fw and not is_held:
+        cyc = cyclical_watch(a.fundamentals, a.metrics)
+        if cyc:
+            cycs.append((q.ticker, display_name, _enrich_cyclical_reason(a, cyc)))
+    if is_weekly_mode:
+        top = cyclical_top_warning(a.fundamentals, a.metrics)
+        if top and not is_held:
+            cyc_tops.append((q.ticker, display_name, _enrich_cyclical_reason(a, top)))
+
+    peg = a.metrics.peg
+    fcf_y = fcf_yield(a.fundamentals.market_cap, a.fundamentals.free_cashflow)
+    if use_ai and a.narrative:
+        sig = extract_signal(a.narrative)
+        if sig:
+            order, label, color, sig_reason = sig
+            verdicts.append((order, q.ticker, display_name, label, color, sig_reason, sbi_ok, peg, fcf_y))
+            section = _render_weekly(a, q.is_priority, label)
+            if is_held_report or is_held:
+                held_items.append((q.ticker, display_name, a.metrics.company_type, list(fw) if fw else [], label))
+                held_detail_sections.append(section)
+            else:
+                entries.append((order, seq, section, sbi_ok))
+        else:
+            label = _SIGNAL_UNKNOWN_LABEL
+            verdicts.append((_SIGNAL_UNKNOWN_ORDER, q.ticker, display_name, label, _SIGNAL_UNKNOWN_COLOR, "", sbi_ok, peg, fcf_y))
+            section = _render_weekly(a, q.is_priority, label)
+            if is_held_report or is_held:
+                held_items.append((q.ticker, display_name, a.metrics.company_type, list(fw) if fw else [], label))
+                held_detail_sections.append(section)
+            else:
+                entries.append((_SIGNAL_UNKNOWN_ORDER, seq, section, sbi_ok))
+    elif is_held_report or is_held:
+        section = _render_weekly(a, q.is_priority)
+        held_items.append((q.ticker, display_name, a.metrics.company_type, list(fw) if fw else [], ""))
+        held_detail_sections.append(section)
+
+
+def _run_weekly_three_layer(args, provider, working, watch, stats) -> int:
+    """周报：L1(已在 working) → L2 Flash → L3 Pro → 分级邮件。"""
+    print("🕳️  三层漏斗：L1 已完成 → 启动 L2 Flash 节食扫射…\n")
+    tl = run_layer2_and_select_layer3(working, watch, provider, report_mode="weekly")
+    print("🎩 启动 L3 Pro 首席终审…\n")
+    analyses = run_layer3_pro(
+        tl.layer3_tickers, watch, provider,
+        report_mode="weekly", prior_analyses=tl.analyses,
+    )
+    counts = {
+        "analyzed": tl.counts.get("analyzed", 0),
+        "ai": 0,
+        "flash": tl.counts.get("flash", 0),
+        "data_only": tl.counts.get("data_only", 0),
+    }
+    # L3 Pro 覆盖后，重新计数 ai
+    for t in tl.layer3_tickers:
+        a = analyses.get(t.upper())
+        if a and a.narrative:
+            counts["ai"] += 1
+
+    entries: list[tuple[int, int, str, bool]] = []
+    verdicts: list = []
+    reds: list = []
+    buckets: dict[str, list] = {k: [] for k in BUCKET_ORDER}
+    cycs: list = []
+    cyc_tops: list = []
+    held_items: list = []
+    held_detail_sections: list = []
+
+    for seq, q in enumerate(working):
+        a = analyses.get(q.ticker.upper())
+        if not a:
+            continue
+        use_ai = q.ticker.upper() in tl.layer3_tickers and bool(a.narrative)
+        _ingest_analysis_into_boards(
+            a, q=q, watch=watch, is_weekly_mode=True, is_held_report=False,
+            use_ai=use_ai, seq=seq,
+            reds=reds, buckets=buckets, cycs=cycs, cyc_tops=cyc_tops,
+            held_items=held_items, held_detail_sections=held_detail_sections,
+            entries=entries, verdicts=verdicts, counts=counts,
+        )
+
+    entries.sort(key=lambda e: (e[0], e[1]))
+    main_sections = [e[2] for e in entries if e[3]]
+    hardcore_sections = [e[2] for e in entries if not e[3]]
+    flat_sections = [e[2] for e in entries]
+    verdicts.sort(key=lambda v: v[0])
+
+    for bid in BUCKET_ORDER:
+        if bid == BUCKET_FAST:
+            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+        elif bid == BUCKET_ASSET:
+            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+        elif bid == BUCKET_DIVIDEND:
+            buckets[bid].sort(key=lambda r: r[2] if r[2] is not None else float("inf"))
+        else:
+            buckets[bid].sort(key=lambda r: r[0])
+        buckets[bid] = buckets[bid][:20]
+
+    bucket_total = sum(len(v) for v in buckets.values())
+    date_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y年%m月%d日")
+    subject = f"{SUBJECT_PREFIX['weekly']} - {date_str}"
+    tags = []
+    buy_count = sum(1 for v in verdicts if v[0] == 0 and v[6])
+    if buy_count:
+        tags.append(f"🏦{buy_count}只SBI强买")
+    elif sum(1 for v in verdicts if v[0] == 0):
+        tags.append(f"🧠{sum(1 for v in verdicts if v[0] == 0)}只强买")
+    if bucket_total:
+        tags.append(f"🟢{bucket_total}只候选")
+    if reds:
+        tags.append(f"🔴{len(reds)}只排雷")
+    if tl.flash_table_rows:
+        tags.append(f"⚡{len(tl.flash_table_rows)}只Flash短评")
+    if cycs:
+        tags.append(f"🌀{len(cycs)}只周期")
+    if cyc_tops:
+        tags.append(f"⚠️{len(cyc_tops)}只周期顶")
+    if tags:
+        subject += "（" + "·".join(tags) + "）"
+
+    top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
+    top_block += notify.render_briefing_summary(
+        mode="weekly",
+        buckets=buckets,
+        reds=reds,
+        cycs=cycs,
+        cyc_tops=cyc_tops,
+        verdicts=verdicts,
+        ai_count=counts["ai"],
+        ai_mode=True,
+    )
+    flash_md = notify.render_flash_shortlist_table(tl.flash_table_rows)
+    briefing = build_briefing(
+        "weekly", date_str, top_block, main_sections, hardcore_sections, stats, counts,
+        ai_mode=True, flat_sections=flat_sections, provider_name=provider.name,
+        flash_shortlist_md=flash_md,
+    )
+    print("\n" + "=" * 60)
+    print(f"主题：{subject}")
+    print(briefing)
+    print("=" * 60 + "\n")
+    if args.no_email:
+        print("ℹ️  --no-email：已跳过邮件发送。")
+    else:
+        notify.send_email(subject, briefing)
+    return 0
+
 
 
 def main() -> int:
@@ -478,13 +697,23 @@ def main() -> int:
         print("⚠️  没有可分析的标的。")
         return 0
 
-    # 第二层漏斗：决定谁走 AI（季报/年报 held 全量送 AI）
+    if args.mode == "weekly":
+        return _run_weekly_three_layer(args, provider, working, watch, stats)
+
+    # 非周报：季报/年报 held 全量 Pro；monthly 走 rank_and_cap
     if ai_available:
         if held_only_mode(args.mode):
             ai_tickers = {q.ticker for q in working}
+            print(f"🧠 AI：held 全量送诊 {len(ai_tickers)} 只\n")
         else:
-            ai_qs, _data_only_qs = rank_and_cap(working)
+            ai_qs, data_only_qs = rank_and_cap(working)
             ai_tickers = {q.ticker for q in ai_qs}
+            cap = config.MAX_AI_ANALYSIS_COUNT
+            cap_label = "不限" if cap <= 0 else str(cap)
+            print(
+                f"🧠 AI 配额={cap_label}｜送 Gemini {len(ai_qs)} 只"
+                f"｜仅硬指标 {len(data_only_qs)} 只（周报详情章只展开 AI/持仓）\n"
+            )
     else:
         ai_tickers = set()
 
@@ -519,6 +748,7 @@ def main() -> int:
                 user_status=user_status,
                 story_diff_context=story_ctx,
                 report_mode=args.mode,
+                model=config.GEMINI_PRO_MODEL if use_ai else None,
             )
             counts["analyzed"] += 1
             counts["ai" if use_ai else "data_only"] += 1
@@ -640,15 +870,19 @@ def main() -> int:
                                 _SIGNAL_UNKNOWN_ORDER, seq, section, sbi_ok,
                             ))
                 else:
-                    section = _render_weekly(a, q.is_priority)
-                    if is_held_report or is_held:
-                        held_items.append((
-                            q.ticker, display_name, a.metrics.company_type,
-                            list(fw) if fw else [], "",
-                        ))
-                        held_detail_sections.append(section)
+                    # 周报：仅硬指标标的已在多桶/排雷摘要出现，不再塞进详情章刷屏
+                    if is_weekly_mode and ai_available and not is_held:
+                        pass
                     else:
-                        entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, section, sbi_ok))
+                        section = _render_weekly(a, q.is_priority)
+                        if is_held_report or is_held:
+                            held_items.append((
+                                q.ticker, display_name, a.metrics.company_type,
+                                list(fw) if fw else [], "",
+                            ))
+                            held_detail_sections.append(section)
+                        else:
+                            entries.append((_SIGNAL_UNKNOWN_ORDER + 1, seq, section, sbi_ok))
         except (FundamentalsError, LLMError) as exc:
             print(f"  ❌ {q.ticker}: {exc}")
             entries.append((99, seq, _render_error(q.ticker, name, str(exc)), True))

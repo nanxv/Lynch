@@ -1,10 +1,12 @@
-"""编排器：抓基本面 → 算硬指标 → 组装数据区块 → 调 Gemini 生成林奇式分析。"""
+"""编排器：抓基本面 → 算硬指标 → 组装数据区块 → 调 Gemini（Flash 节食 / Pro 终审）。"""
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 
-from . import knowledge, llm
+from . import config, knowledge, llm
 from .cyclical import cyclical_data_block_lines
 from .data import Fundamentals, get_provider
 from .data.base import BaseDataProvider
@@ -17,7 +19,7 @@ from .metrics import (
     pe_vs_5y_ratio,
     quarterly_discipline_block_lines,
 )
-from .prompt import SYSTEM_PROMPT
+from .prompt import FLASH_MICRO_PROMPT, SYSTEM_PROMPT
 from .watchlist import normalize_user_status
 
 
@@ -38,6 +40,18 @@ class LynchAnalysis:
     metrics: LynchMetrics
     data_block: str
     narrative: str | None  # LLM 叙述；data-only 模式下为 None
+
+
+@dataclass(frozen=True)
+class FlashMicroScore:
+    """Layer 2 Flash 微评分结果。"""
+    ticker: str
+    name: str
+    company_type: str
+    lynch_score: int
+    one_liner: str
+    raw_response: str = ""
+    parse_ok: bool = True
 
 
 def _fmt(v: float | None, pct: bool = False, money: bool = False,
@@ -237,6 +251,159 @@ def build_data_block(f: Fundamentals, m: LynchMetrics, *, day_change: float | No
     return "\n".join(lines)
 
 
+def build_micro_data_block(f: Fundamentals, m: LynchMetrics) -> str:
+    """Layer 2 Token 节食：极短量化快照（供 Flash JSON 打分）。"""
+    peg = m.peg
+    pe = f.trailing_pe
+    debt = m.by_key("debt")
+    fcf = m.by_key("fcf")
+    inv = m.by_key("inventory")
+    lines = [
+        f"ticker={f.ticker}",
+        f"name={f.name or f.ticker}",
+        f"type={m.company_type}",
+        f"PEG={peg if peg is not None else 'NA'}",
+        f"PE={pe if pe is not None else 'NA'}",
+        f"debt={debt.verdict if debt else 'NA'}",
+        f"fcf={fcf.verdict if fcf else 'NA'}",
+        f"inventory={inv.verdict if inv else 'NA'}",
+        f"div_yield={f.dividend_yield if f.dividend_yield is not None else 'NA'}",
+        f"earn_yoy={f.earnings_growth_yoy if f.earnings_growth_yoy is not None else 'NA'}",
+        f"rev_yoy={f.revenue_growth_yoy if f.revenue_growth_yoy is not None else 'NA'}",
+        f"tags="
+        + ",".join(
+            t for t, on in (
+                ("growth_cap_warn", m.growth_cap_warn),
+                ("institutional_neglect", m.institutional_neglect),
+                ("insider_net_buying", m.insider_net_buying),
+                ("ultimate_alpha", m.ultimate_alpha),
+                ("cyclical", m.is_cyclical),
+                ("financial", m.is_financial),
+            ) if on
+        ),
+    ]
+    for line in alpha_intel_lines(f, m):
+        lines.append(line.replace("\n", " ")[:120])
+    return "\n".join(lines)
+
+
+def parse_flash_micro_json(text: str, *, ticker: str, name: str, company_type: str) -> FlashMicroScore:
+    """健壮解析 Flash 微评分 JSON；失败时降级为 score=0，不抛异常。"""
+    raw = (text or "").strip()
+    try:
+        cleaned = raw
+        if "```" in cleaned:
+            cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
+            cleaned = cleaned.replace("```", "")
+        match = re.search(r"\{[\s\S]*?\}", cleaned)
+        if not match:
+            raise ValueError("no json object")
+        data = json.loads(match.group(0))
+        score = int(data.get("lynch_score", 0))
+        score = max(0, min(100, score))
+        one = str(data.get("one_liner") or "").strip().replace("\n", " ")
+        if len(one) > 30:
+            one = one[:30]
+        tk = str(data.get("ticker") or ticker).strip().upper() or ticker
+        return FlashMicroScore(
+            ticker=tk,
+            name=name,
+            company_type=company_type,
+            lynch_score=score,
+            one_liner=one or "无短评",
+            raw_response=raw,
+            parse_ok=True,
+        )
+    except Exception:  # noqa: BLE001
+        return FlashMicroScore(
+            ticker=ticker,
+            name=name,
+            company_type=company_type,
+            lynch_score=0,
+            one_liner="JSON解析失败",
+            raw_response=raw[:500],
+            parse_ok=False,
+        )
+
+
+def _rate_limit_sleep(model: str) -> None:
+    """免费档 RPM 防御：Flash 强制间隔 4.5s（≈15RPM），Pro 强制间隔 32s（≈2RPM）。"""
+    import time
+
+    from .llm import _last_call_mono, _throttle_lock, interval_for_model
+
+    resolved = (model or "").strip() or config.GEMINI_FLASH_MODEL
+    gap = interval_for_model(resolved)
+    if gap <= 0:
+        return
+    with _throttle_lock:
+        now = time.monotonic()
+        last = _last_call_mono.get(resolved, 0.0)
+        wait = gap - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_mono[resolved] = time.monotonic()
+
+
+def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
+    """Layer 2：强制 gemini-1.5-flash + 微 Prompt，只产出 JSON 评分。"""
+    f, m = analysis.fundamentals, analysis.metrics
+    name = f.name or f.ticker
+    ctype = m.company_type or ""
+    if not llm.is_configured():
+        return FlashMicroScore(
+            ticker=f.ticker, name=name, company_type=ctype,
+            lynch_score=0, one_liner="未配置GEMINI", parse_ok=False,
+        )
+    model = config.GEMINI_FLASH_MODEL
+    micro = build_micro_data_block(f, m)
+    user_content = f"请为下列标的打分并只输出 JSON：\n\n{micro}"
+    try:
+        _rate_limit_sleep(model)  # Flash 4.5s
+        text = llm.generate(
+            FLASH_MICRO_PROMPT,
+            user_content,
+            model=model,
+            max_tokens=llm.FLASH_MICRO_MAX_TOKENS,
+            skip_throttle=True,
+        )
+        return parse_flash_micro_json(text, ticker=f.ticker, name=name, company_type=ctype)
+    except Exception as exc:  # noqa: BLE001
+        return FlashMicroScore(
+            ticker=f.ticker,
+            name=name,
+            company_type=ctype,
+            lynch_score=0,
+            one_liner=f"Flash失败:{type(exc).__name__}"[:30],
+            raw_response=str(exc)[:300],
+            parse_ok=False,
+        )
+
+
+def select_layer3_tickers(
+    held_tickers: set[str],
+    flash_scores: list[FlashMicroScore],
+    *,
+    top_n: int | None = None,
+) -> list[str]:
+    """Layer 3 名额：全部 held + Flash 评分 Top N（去重保序）。"""
+    n = config.LAYER3_FLASH_TOP_N if top_n is None else top_n
+    ranked = sorted(flash_scores, key=lambda s: (-s.lynch_score, s.ticker))
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in held_tickers:
+        tu = t.upper()
+        if tu not in seen:
+            seen.add(tu)
+            out.append(tu)
+    for s in ranked[: max(0, n)]:
+        tu = s.ticker.upper()
+        if tu not in seen:
+            seen.add(tu)
+            out.append(tu)
+    return out
+
+
 def analyze_company(
     ticker: str,
     *,
@@ -253,6 +420,7 @@ def analyze_company(
 
     report_mode: daily/weekly/monthly/quarterly/annual，决定底层数据颗粒度与 Task Prompt。
     user_status: 影子持仓状态 held / watch（来自 watchlist.yaml status 字段）。
+    深度会诊默认强制 Pro（Layer 3 / 日报 / 季年报）；可显式传入 model 覆盖。
     """
     prov = provider or get_provider()
     f = prov.get_fundamentals(ticker, mode=report_mode)
@@ -283,7 +451,12 @@ def analyze_company(
             f"{data_block}{note}{story}{ref}\n\n"
             "请严格引用上面的真实数字，并在最末尾单独一行给出唯一的【行动指令】。"
         )
-        narrative = llm.generate(_system_prompt(), user_content, model=model)
+        # Layer 3 / 深度会诊：强制 Pro + 32s RPM 防御
+        resolved = (model or config.GEMINI_PRO_MODEL).strip() or config.GEMINI_PRO_MODEL
+        _rate_limit_sleep(resolved)  # Pro 32s
+        narrative = llm.generate(
+            _system_prompt(), user_content, model=resolved, skip_throttle=True,
+        )
 
     return LynchAnalysis(
         ticker=f.ticker,
