@@ -12,3 +12,5 @@ markdown>=3.7
 lxml>=5.0.0
 xlrd>=2.0.1
 curl_cffi>=0.7.0
+# Layer 3 OpenBB sidecar（免费源：FRED / SEC / yfinance；可选——未安装则外挂自动降级）
+openbb>=4.4.0

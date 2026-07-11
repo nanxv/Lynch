@@ -19,16 +19,20 @@ from .metrics import (
     pe_vs_5y_ratio,
     quarterly_discipline_block_lines,
 )
-from .prompt import FLASH_MICRO_PROMPT, SYSTEM_PROMPT
+from .data.openbb_provider import build_openbb_sidecar_block
+from .prompt import FLASH_MICRO_PROMPT, LAYER3_PRO_PROMPT, SYSTEM_PROMPT
 from .watchlist import normalize_user_status
 
 
-def _system_prompt() -> str:
-    """system prompt = 人设 SOP + 林奇心法包（自撰提炼知识库）。"""
+def _system_prompt(*, layer3_openbb: bool = False) -> str:
+    """system prompt = 人设 SOP + 林奇心法包；Layer 3 深诊再叠 OpenBB 终审补丁。"""
     playbook = knowledge.load_playbook()
+    base = SYSTEM_PROMPT
     if playbook:
-        return f"{SYSTEM_PROMPT}\n\n---\n\n# 附：林奇心法包（判断时严格遵循）\n\n{playbook}"
-    return SYSTEM_PROMPT
+        base = f"{SYSTEM_PROMPT}\n\n---\n\n# 附：林奇心法包（判断时严格遵循）\n\n{playbook}"
+    if layer3_openbb:
+        return f"{base}\n\n---\n\n{LAYER3_PRO_PROMPT}"
+    return base
 
 _FLAG_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 
@@ -457,11 +461,29 @@ def analyze_company(
     report_mode: daily/weekly/monthly/quarterly/annual，决定底层数据颗粒度与 Task Prompt。
     user_status: 影子持仓状态 held / watch（来自 watchlist.yaml status 字段）。
     深度会诊默认强制 Pro（Layer 3 / 日报 / 季年报）；可显式传入 model 覆盖。
+
+    OpenBB 外挂：仅在非 data_only 的 Pro 深诊路径注入（Layer 3 / daily / 季年报）。
+    Layer 1 漏斗与 Layer 2 Flash（flash_micro_score）永不调用本外挂。
     """
     prov = provider or get_provider()
     f = prov.get_fundamentals(ticker, mode=report_mode)
     m = compute_metrics(f)
     data_block = build_data_block(f, m, day_change=day_change)
+
+    # Layer 3 / Pro 深诊：追加 OpenBB 免费定性板块（失败则降级文案，不抛错）
+    use_openbb = not data_only
+    if use_openbb:
+        try:
+            data_block = data_block + build_openbb_sidecar_block(
+                f.ticker,
+                sector=f.sector,
+                industry=f.industry,
+                company_type=m.company_type,
+                is_cyclical=m.is_cyclical,
+            )
+            print(f"  🔌 OpenBB 外挂已注入 → {f.ticker}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ OpenBB 外挂跳过 {f.ticker}: {exc}")
 
     narrative: str | None = None
     if not data_only:
@@ -491,7 +513,10 @@ def analyze_company(
         resolved = (model or config.GEMINI_PRO_MODEL).strip() or config.GEMINI_PRO_MODEL
         _rate_limit_sleep(resolved)  # Pro 32s
         narrative = llm.generate(
-            _system_prompt(), user_content, model=resolved, skip_throttle=True,
+            _system_prompt(layer3_openbb=use_openbb),
+            user_content,
+            model=resolved,
+            skip_throttle=True,
         )
 
     return LynchAnalysis(

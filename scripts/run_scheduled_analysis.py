@@ -271,20 +271,35 @@ def _render_daily_section(
 
 
 def _run_daily_sniper(args, provider) -> int:
-    """日报：仅异动触发标的，无异动则静默退出。"""
+    """日报：仅异动触发标的，无异动则静默退出。
+
+    调试：`--force --tickers ACGL` 可跳过异动门禁，强制对指定代码跑 Pro 深诊
+    （便于验证 Layer 3 OpenBB 外挂注入）。
+    """
     watch = _resolve_watch(args)
     if not watch:
         print("⚠️  watchlist 为空。")
         return 0
 
     triggered: list[tuple[QuickScreen, str, str, list[str], float | None]] = []
+    force_tickers = {
+        config.correct_ticker(t).upper()
+        for t in (args.tickers or [])
+    } if getattr(args, "force", False) and args.tickers else set()
+
     for t, (n, note, st) in watch.items():
         ok, reasons, chg = check_daily_trigger(provider, t)
+        if not ok and t.upper() in force_tickers:
+            ok = True
+            reasons = reasons or ["--force 强制深诊（OpenBB/调试）"]
+            print(f"  🔧 强制纳入日报深诊：{t}")
         if ok:
             triggered.append((_watch_qs(t, n, st), note, st, reasons, chg))
 
     if not triggered:
         print("ℹ️  无异动标的（价格波动/8-K/内部人），日报静默跳过。")
+        if not args.force:
+            print("   提示：可用 --force --tickers ACGL 强制验证 OpenBB 外挂。")
         return 0
 
     ai_available = llm.is_configured()

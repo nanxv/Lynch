@@ -44,12 +44,37 @@ def _load_json(path: Path) -> dict[str, Any] | list[Any] | None:
 
 
 def _save_json(path: Path, data: Any) -> None:
+    """原子写入；跨进程并发时用唯一临时文件，避免互相踩 .tmp。"""
+    import os
+    import time
+
     _ensure_dirs()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    tmp.replace(path)
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    last_exc: Exception | None = None
+    for attempt in range(5):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{attempt}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as f:
+                f.write(payload)
+            tmp.replace(path)
+            return
+        except FileNotFoundError as exc:
+            # 并发 replace / 目录瞬时空窗
+            last_exc = exc
+            path.parent.mkdir(parents=True, exist_ok=True)
+            time.sleep(0.05 * (attempt + 1))
+        except OSError as exc:
+            last_exc = exc
+            time.sleep(0.05 * (attempt + 1))
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+    if last_exc:
+        raise last_exc
 
 
 class FmpApiBudget:
