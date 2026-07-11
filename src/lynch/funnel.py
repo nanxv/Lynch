@@ -82,6 +82,14 @@ def evaluate_first_funnel(q: QuickScreen) -> tuple[bool, QuickScreen]:
     if passes_cyclical_funnel(q):
         channels.append("cyclical")
 
+    # PEG 宽容：周期/困境 PEG 缺失或无效时予以放行（触底常见，勿因缺 PEG 误杀）
+    if (
+        (q.is_cyclical or q.coarse_class == "困境反转型")
+        and (q.quick_peg is None or q.quick_peg <= 0)
+        and "cyclical" not in channels
+    ):
+        channels.append("peg_na_cyclical")
+
     # 通道 B：隐蔽资产（净现金）——打 asset_play_hint，不改主类
     if strict_debt and q.net_cash_ratio is not None and q.net_cash_ratio >= config.FUNNEL_MIN_NETCASH_RATIO:
         channels.append("net_cash")
@@ -161,6 +169,7 @@ def first_funnel(
     channel_hits: dict[str, int] = {
         "peg": 0,
         "cyclical": 0,
+        "peg_na_cyclical": 0,
         "net_cash": 0,
         "stalwart": 0,
         "slow_div": 0,
@@ -192,6 +201,7 @@ def first_funnel(
         f"🕳️  第一层漏斗：{total} → {len(survivors)} 只幸存（刷掉 {total - len(survivors)}）"
         f"｜通道 peg={channel_hits.get('peg', 0)} "
         f"cyclical={channel_hits.get('cyclical', 0)} "
+        f"peg_na={channel_hits.get('peg_na_cyclical', 0)} "
         f"net_cash={channel_hits.get('net_cash', 0)} "
         f"stalwart={channel_hits.get('stalwart', 0)} "
         f"slow_div={channel_hits.get('slow_div', 0)} "
@@ -325,25 +335,22 @@ def fatal_warnings(
     """
     reasons: list[str] = []
 
-    # 1) 存货增速 > 销售增速的 2 倍（增加轻资产与科技/通信股豁免）
-    inv_yoy = _yoy(f.inventory_series)
-    sales_yoy = _yoy(f.revenue_series)
-    if inv_yoy is not None and sales_yoy is not None and inv_yoy > 0:
-        # 科技/通信属于轻资产行业（否则谷歌等会被存货规则错杀）
-        is_tech = f.sector in ("Technology", "Communication Services")
+    # 1) 存货增速 > 销售增速的 2 倍（金融/科技/通信等无库存行业彻底豁免）
+    from .classifier import inventory_exempt_from_labels
 
-        # 最新一期存货占总资产比例
-        latest_inv = 0.0
-        if f.inventory_series:
-            latest_inv = f.inventory_series[max(f.inventory_series)]
-        inv_ratio = (latest_inv / f.total_assets) if (latest_inv and f.total_assets) else 0.0
-
-        # 科技股 或 存货占总资产极低(<5%) → 强制豁免存货暴增红灯
-        is_light_asset_safe = is_tech or (0 < inv_ratio < 0.05)
-
-        if not is_light_asset_safe:
-            if inv_yoy > max(sales_yoy, 0) * 2 and inv_yoy - sales_yoy > 0.05:
-                reasons.append(f"存货暴增(存货+{inv_yoy:.0%} vs 销售+{sales_yoy:.0%})")
+    if not inventory_exempt_from_labels(f.sector, f.industry):
+        inv_yoy = _yoy(f.inventory_series)
+        sales_yoy = _yoy(f.revenue_series)
+        if inv_yoy is not None and sales_yoy is not None and inv_yoy > 0:
+            latest_inv = 0.0
+            if f.inventory_series:
+                latest_inv = f.inventory_series[max(f.inventory_series)]
+            inv_ratio = (latest_inv / f.total_assets) if (latest_inv and f.total_assets) else 0.0
+            # 存货占总资产极低(<5%) → 额外豁免
+            is_light_asset_safe = 0 < inv_ratio < 0.05
+            if not is_light_asset_safe:
+                if inv_yoy > max(sales_yoy, 0) * 2 and inv_yoy - sales_yoy > 0.05:
+                    reasons.append(f"存货暴增(存货+{inv_yoy:.0%} vs 销售+{sales_yoy:.0%})")
 
     # 2) 长期负债 / 股东权益 > 1/3（金融股豁免）
     if not m.is_financial and f.long_term_debt is not None and f.stockholders_equity and f.stockholders_equity > 0:

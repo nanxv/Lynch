@@ -1288,6 +1288,7 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
         growth=class_growth,
         dividend_yield_pct=div_pct,
         long_term_debt=ltd_abs,
+        revenue_growth=sales_f,
     )
 
     peg_ok = coarse_peg is not None and 0 < coarse_peg <= config.FUNNEL_MAX_PEG
@@ -1362,6 +1363,7 @@ def _light_quick_screen(sym: str) -> QuickScreen | None:
                     growth=earn_growth,
                     dividend_yield_pct=q.dividend_yield,
                     long_term_debt=1.0,
+                    revenue_growth=sales_f,
                 ),
             )
     return q

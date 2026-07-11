@@ -146,8 +146,13 @@ def format_industry_pe_anchor(f: Fundamentals) -> str:
 
 def inventory_health_block_lines(f: Fundamentals) -> list[str]:
     """喂给大模型的【存货周转健康度】+ 行业 P/E 锚点。"""
+    from .classifier import is_inventory_exempt
+
     lines: list[str] = []
-    if f.dio_series:
+    if is_inventory_exempt(f):
+        # 金融/科技/通信等：禁止输出 DIO / 存货无法比较类噪音
+        pass
+    elif f.dio_series:
         lines.append("— 存货周转健康度（微观·DIO，天数越短越好）—")
         years = sorted(f.dio_series)
         seq = " → ".join(f"{y}:{f.dio_series[y]:.0f}天" for y in years)
@@ -259,8 +264,11 @@ def assess_cyclical_quick(q: QuickScreen) -> CyclicalAssessment:
     if not q.is_cyclical:
         return CyclicalAssessment(CyclicalPhase.NOT_CYCLICAL, (), (), True)
 
+    from .classifier import inventory_exempt_from_labels
+
+    inv_exempt = inventory_exempt_from_labels(q.sector, q.industry)
     inv, sales = q.inventory_growth, q.sales_growth
-    inventory_ok = _inventory_growth(inv, sales)
+    inventory_ok = True if inv_exempt else _inventory_growth(inv, sales)
     distress = _distress_signals(
         trailing_pe=q.trailing_pe,
         growth_yoy=q.growth_yoy,
@@ -269,8 +277,8 @@ def assess_cyclical_quick(q: QuickScreen) -> CyclicalAssessment:
     top = _top_trap_signals(
         trailing_pe=q.trailing_pe,
         growth_yoy=q.growth_yoy,
-        inv_yoy=inv,
-        sales_yoy=sales,
+        inv_yoy=None if inv_exempt else inv,
+        sales_yoy=None if inv_exempt else sales,
         pe_5y_avg=q.pe_5y_avg,
         quick_peg=q.quick_peg,
     )
@@ -289,9 +297,12 @@ def assess_cyclical(f: Fundamentals, m: LynchMetrics) -> CyclicalAssessment:
     if not m.is_cyclical:
         return CyclicalAssessment(CyclicalPhase.NOT_CYCLICAL, (), (), True)
 
-    inv_yoy = _yoy(f.inventory_series)
+    from .classifier import is_inventory_exempt
+
+    inv_exempt = is_inventory_exempt(f)
+    inv_yoy = None if inv_exempt else _yoy(f.inventory_series)
     sales_yoy = _yoy(f.revenue_series)
-    inventory_ok = _inventory_growth(inv_yoy, sales_yoy)
+    inventory_ok = True if inv_exempt else _inventory_growth(inv_yoy, sales_yoy)
     distress = _distress_signals(
         trailing_pe=f.trailing_pe,
         growth_yoy=f.earnings_growth_yoy,
@@ -304,7 +315,7 @@ def assess_cyclical(f: Fundamentals, m: LynchMetrics) -> CyclicalAssessment:
         sales_yoy=sales_yoy,
         pe_5y_avg=f.pe_5y_avg,
         earnings_peak=_earnings_at_peak(f),
-        dio_yoy=f.dio_yoy,
+        dio_yoy=None if inv_exempt else f.dio_yoy,
     )
     phase = _resolve_phase(
         is_cyclical=True,

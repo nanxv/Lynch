@@ -194,13 +194,25 @@ def _debt_metric(f: Fundamentals, financial: bool) -> Metric:
     return Metric("debt", "长期负债 / 股东权益", round(ratio, 2), flag, note)
 
 
-def _inventory_metric(f: Fundamentals) -> Metric:
+def _inventory_metric(f: Fundamentals, *, inventory_exempt: bool = False) -> Metric:
+    if inventory_exempt:
+        return Metric(
+            "inventory", "存货增速 vs 销售增速", None, "green",
+            "轻资产/科技/通信/金融行业豁免存货排雷（不适用 DIO 与存货增速比较）。",
+        )
     inv_yoy = _yoy(f.inventory_series)
     sales_yoy = _yoy(f.revenue_series)
     if inv_yoy is None or sales_yoy is None:
+        # 无存货序列且非豁免行业：可能是数据缺失；若存货全 0 也视为不适用
+        inv_vals = [v for v in f.inventory_series.values() if v]
+        if not inv_vals:
+            return Metric(
+                "inventory", "存货增速 vs 销售增速", None, "green",
+                "无实质存货（服务/轻资产），跳过存货排雷。",
+            )
         return Metric(
             "inventory", "存货增速 vs 销售增速", None, "yellow",
-            "存货或营收序列不足，无法比较（服务型公司可能无存货，正常）。",
+            "存货或营收序列不足，无法比较。",
         )
     gap = inv_yoy - sales_yoy
     val = round(gap * 100, 1)
@@ -216,7 +228,12 @@ def _inventory_metric(f: Fundamentals) -> Metric:
     return Metric("inventory", "存货增速 vs 销售增速(差,百分点)", val, flag, note)
 
 
-def _net_cash_metric(f: Fundamentals) -> Metric:
+def _net_cash_metric(f: Fundamentals, *, financial: bool = False) -> Metric:
+    if financial:
+        return Metric(
+            "net_cash", "每股净现金", None, "green",
+            "金融业豁免每股净现金排雷（经营负债天然高，无工业意义上的净现金垫）。",
+        )
     cash, debt, shares = f.total_cash, f.total_debt, f.shares_outstanding
     if cash is None or shares is None or shares <= 0:
         if f.cash_per_share is not None:
@@ -264,17 +281,25 @@ def _fcf_metric(f: Fundamentals) -> Metric:
 
 
 def compute_metrics(f: Fundamentals) -> LynchMetrics:
-    from .data.base import classify_company, growth_cap_warn, is_cyclical, is_financial
+    from .classifier import (
+        classify_company,
+        growth_cap_warn,
+        is_cyclical,
+        is_financial,
+        is_inventory_exempt,
+    )
 
     financial = is_financial(f)
     cyclical = is_cyclical(f)
+    inv_exempt = is_inventory_exempt(f)
     growth_rate, basis = _pick_growth(f)
     peg, peg_metric = _peg_metric(f, growth_rate, cyclical)
+    company_type = classify_company(f)
     metrics = [
         peg_metric,
         _debt_metric(f, financial),
-        _inventory_metric(f),
-        _net_cash_metric(f),
+        _inventory_metric(f, inventory_exempt=inv_exempt),
+        _net_cash_metric(f, financial=financial),
         _fcf_metric(f),
     ]
     neglect, insider, ultimate = evaluate_alpha_flags(f)
@@ -283,11 +308,11 @@ def compute_metrics(f: Fundamentals) -> LynchMetrics:
         growth_basis=basis,
         peg=peg,
         metrics=metrics,
-        company_type=classify_company(f),
+        company_type=company_type,
         is_financial=financial,
         is_cyclical=cyclical,
         sbi_tradable=check_sbi_tradable_fundamentals(f),
-        growth_cap_warn=growth_cap_warn(f, cagr=growth_rate),
+        growth_cap_warn=growth_cap_warn(f, cagr=growth_rate, company_type=company_type),
         institutional_neglect=neglect,
         insider_net_buying=insider,
         ultimate_alpha=ultimate,

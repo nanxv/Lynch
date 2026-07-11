@@ -295,11 +295,14 @@ def render_cyclical_block(cycs: list[tuple[str, str, str]]) -> str:
 def render_held_consultation_block(
     items: list[tuple[str, str, str, list[str], str]],
     detail_sections: list[str] | None = None,
+    *,
+    include_details: bool = True,
 ) -> str:
     """🛡️ 核心持仓独立会诊：置顶展示 held 标的，脱离普通优质/排雷榜单。
 
     items: (ticker, name, company_type, warnings, signal_label)
     detail_sections: 与 items 同序的完整会诊 Markdown（可选）
+    include_details: False 时只渲染摘要卡（周报用：摘要后立刻接裁决看板）
     """
     if not items:
         return ""
@@ -323,7 +326,7 @@ def render_held_consultation_block(
     lines.append("---")
     lines.append("")
     body = ""
-    if detail_sections:
+    if include_details and detail_sections:
         body = "\n".join(detail_sections) + "\n\n---\n\n"
     return "\n".join(lines) + body
 
@@ -341,8 +344,8 @@ def render_mode_banner(mode: str) -> str:
         "weekly": (
             "> ## 🌍 全境三层漏斗雷达\n"
             ">\n"
-            "> *L1 机器硬筛 → L2 Flash 节食打分 → L3 Pro 终审（held+Top10）"
-            "｜底部附全境海选短评榜。*\n"
+            "> *置顶：持仓会诊 → 智能体裁决看板｜其后多桶/排雷｜"
+            "L1→L2 Flash→L3 Pro｜文末 Flash 海选短评。*\n"
             ">\n---\n\n"
         ),
         "quarterly": (
@@ -447,9 +450,12 @@ def render_briefing_summary(
     ai_mode: bool,
     daily_triggered: list[tuple[str, str, list[str], str]] | None = None,
     held_items: list[tuple[str, str, str, list[str], str]] | None = None,
+    include_banner: bool = True,
 ) -> str:
     """简报置顶区：按时间维度分离渲染逻辑。"""
-    parts: list[str] = [render_mode_banner(mode)]
+    parts: list[str] = []
+    if include_banner:
+        parts.append(render_mode_banner(mode))
 
     if mode == "daily":
         parts.append(render_daily_sniper_summary(daily_triggered or []))
@@ -463,8 +469,13 @@ def render_briefing_summary(
             ))
         return "".join(parts)
 
-    # weekly / monthly：机械雷达 + 多桶 + 裁决看板
+    # weekly：裁决看板紧随持仓（由调用方先拼 held），再多桶/排雷/周期
     if mode == "weekly":
+        parts.append(render_dual_track_verdict_dashboard(
+            verdicts,
+            ai_count=ai_count,
+            show_when_empty=ai_mode,
+        ))
         if buckets is not None:
             parts.append(render_multi_bucket_briefing(buckets))
         elif recs:
@@ -472,7 +483,11 @@ def render_briefing_summary(
         else:
             parts.append(render_multi_bucket_briefing({}))
         parts.append(render_red_flag_block(reds))
-    elif ai_count == 0 and mode == "monthly":
+        parts.append(render_cyclical_top_block(cyc_tops or []))
+        parts.append(render_cyclical_block(cycs))
+        return "".join(parts)
+
+    if ai_count == 0 and mode == "monthly":
         parts.append(render_red_flag_block(reds))
     parts.append(render_dual_track_verdict_dashboard(
         verdicts,

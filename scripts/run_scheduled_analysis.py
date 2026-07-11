@@ -622,7 +622,11 @@ def _run_weekly_three_layer(args, provider, working, watch, stats) -> int:
     if tags:
         subject += "（" + "·".join(tags) + "）"
 
-    top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
+    # 周报置顶顺序：①持仓摘要 → ②裁决看板 → 多桶/排雷…；持仓长文进详情章开头
+    top_block = notify.render_mode_banner("weekly")
+    top_block += notify.render_held_consultation_block(
+        held_items, held_detail_sections, include_details=False,
+    )
     top_block += notify.render_briefing_summary(
         mode="weekly",
         buckets=buckets,
@@ -632,7 +636,11 @@ def _run_weekly_three_layer(args, provider, working, watch, stats) -> int:
         verdicts=verdicts,
         ai_count=counts["ai"],
         ai_mode=True,
+        include_banner=False,
     )
+    if held_detail_sections:
+        main_sections = list(held_detail_sections) + list(main_sections)
+        flat_sections = list(held_detail_sections) + list(flat_sections)
     flash_md = notify.render_flash_shortlist_table(tl.flash_table_rows)
     briefing = build_briefing(
         "weekly", date_str, top_block, main_sections, hardcore_sections, stats, counts,
@@ -950,7 +958,10 @@ def main() -> int:
             held_items=held_items,
         )
     elif is_weekly_mode:
-        top_block = notify.render_held_consultation_block(held_items, held_detail_sections)
+        top_block = notify.render_mode_banner("weekly")
+        top_block += notify.render_held_consultation_block(
+            held_items, held_detail_sections, include_details=False,
+        )
         top_block += notify.render_briefing_summary(
             mode="weekly",
             buckets=buckets,
@@ -960,7 +971,11 @@ def main() -> int:
             verdicts=verdicts,
             ai_count=counts["ai"],
             ai_mode=ai_mode,
+            include_banner=False,
         )
+        if held_detail_sections:
+            main_sections = list(held_detail_sections) + list(main_sections)
+            flat_sections = list(held_detail_sections) + list(flat_sections)
     else:
         top_block = notify.render_briefing_summary(
             mode=args.mode,
