@@ -376,7 +376,10 @@ def _render_weekly(a: LynchAnalysis, priority: bool, signal_label: str = "") -> 
         lines.append(a.narrative)
     else:
         if llm.is_configured():
-            lines.append("> ℹ️ 本轮未送 Gemini（AI 名额已满或非优先标的），仅附硬指标。")
+            lines.append(
+                "> ℹ️ 本轮无 Pro 长文会诊（调用失败、未进 L3，或仅硬指标），"
+                "请以多桶/Flash 短评与量化排雷为准。"
+            )
         else:
             lines.append("> ⚠️ 未配置 GEMINI_API_KEY，仅硬指标。")
         lines.append("")

@@ -114,8 +114,9 @@ DAILY_PRICE_CHANGE_THRESHOLD = _env_float("DAILY_PRICE_CHANGE_THRESHOLD", 0.04) 
 
 # ── 三层漏斗 · Gemini 不对称算力（免费档）────────────────────
 # Layer 2 扫射：Flash；Layer 3 / daily / 季年报终审：Pro
-GEMINI_FLASH_MODEL = _env_str("GEMINI_FLASH_MODEL", "gemini-1.5-flash")
-GEMINI_PRO_MODEL = _env_str("GEMINI_PRO_MODEL", "gemini-1.5-pro")
+# 注意：gemini-1.5-* 已关停；免费档用 2.5-flash，终审用 2.5-pro
+GEMINI_FLASH_MODEL = _env_str("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
+GEMINI_PRO_MODEL = _env_str("GEMINI_PRO_MODEL", "gemini-2.5-pro")
 # 兼容旧变量：未单独指定时默认 Flash（节食）
 # 注意：周报 L3 / 日报 / 季年报会强制 Pro，不受此默认影响。
 # （实际默认模型解析见 llm.py）

@@ -361,7 +361,7 @@ def _rate_limit_sleep(model: str) -> None:
 
 
 def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
-    """Layer 2：强制 gemini-1.5-flash + 微 Prompt，只产出 JSON 评分。"""
+    """Layer 2：强制 Flash 微 Prompt，只产出 JSON 评分。"""
     f, m = analysis.fundamentals, analysis.metrics
     name = f.name or f.ticker
     ctype = m.company_type or ""
@@ -384,12 +384,19 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
         )
         return parse_flash_micro_json(text, ticker=f.ticker, name=name, company_type=ctype)
     except Exception as exc:  # noqa: BLE001
+        hint = str(exc).replace("\n", " ")
+        if "NOT_FOUND" in hint or "not found" in hint.lower():
+            short = "模型不可用/已下线"
+        elif "429" in hint or "ResourceExhausted" in hint:
+            short = "配额耗尽429"
+        else:
+            short = type(exc).__name__
         return FlashMicroScore(
             ticker=f.ticker,
             name=name,
             company_type=ctype,
             lynch_score=0,
-            one_liner=f"Flash失败:{type(exc).__name__}"[:30],
+            one_liner=f"Flash失败:{short}"[:30],
             raw_response=str(exc)[:300],
             parse_ok=False,
         )

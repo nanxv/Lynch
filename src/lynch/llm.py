@@ -18,11 +18,11 @@ class LLMError(Exception):
 # 官方稳定版（三层漏斗硬编码默认；可用环境变量覆盖）
 FLASH_MODEL = (os.getenv("GEMINI_FLASH_MODEL") or config.GEMINI_FLASH_MODEL).strip()
 PRO_MODEL = (os.getenv("GEMINI_PRO_MODEL") or config.GEMINI_PRO_MODEL).strip()
-_FALLBACK_MODEL = FLASH_MODEL or "gemini-1.5-flash"
+_FALLBACK_MODEL = FLASH_MODEL or "gemini-2.5-flash"
 # 兼容旧 GEMINI_MODEL：未设则默认 Flash（节食）
 DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip() or _FALLBACK_MODEL
 SNIPER_DRILL_MAX_TOKENS = 2048
-FLASH_MICRO_MAX_TOKENS = 256
+FLASH_MICRO_MAX_TOKENS = 1024  # 2.5 系列可能占用思考 token，过小易空响应
 
 _last_call_mono: dict[str, float] = {}
 _throttle_lock = threading.Lock()

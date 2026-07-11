@@ -90,9 +90,9 @@ jobs:
           FMP_REQUEST_INTERVAL: "0.21"
           # 三层漏斗：Flash 节食 + Pro 终审（免费档 RPM 已在代码内节流）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_FLASH_MODEL: ${{ secrets.GEMINI_FLASH_MODEL || 'gemini-1.5-flash' }}
-          GEMINI_PRO_MODEL: ${{ secrets.GEMINI_PRO_MODEL || 'gemini-1.5-pro' }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-1.5-flash' }}
+          GEMINI_FLASH_MODEL: ${{ secrets.GEMINI_FLASH_MODEL || 'gemini-2.5-flash' }}
+          GEMINI_PRO_MODEL: ${{ secrets.GEMINI_PRO_MODEL || 'gemini-2.5-pro' }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-2.5-flash' }}
           GEMINI_FLASH_INTERVAL_SEC: "4.5"
           GEMINI_PRO_INTERVAL_SEC: "32"
           # 邮件 SMTP
