@@ -59,7 +59,8 @@ def evaluate_first_funnel(q: QuickScreen) -> tuple[bool, QuickScreen]:
     通道：
       A peg — 严格负债 + 粗略股息修正 PEG
       B net_cash — 严格负债（金融豁免）+ 净现金/股价
-      C cyclical — 周期 + 无有效 PEG/亏损 + 存货未堆
+      C cyclical — 周期底部旁路（利润难看+存货未堆）
+      C2 peg_na_cyclical — 周期/困境 PEG 缺失放行（勿误杀触底股）
       D stalwart — 非快增非周期、盈利；PE≤5y均×折扣(可配) + 稳增负债上限；
                    或稳增股息旁路（股息≥STALWART_MIN + 可持续）
       E slow_div — 慢增/低增速；股息≥4% + 可持续
