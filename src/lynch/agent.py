@@ -296,14 +296,89 @@ def _clean_flash_json_text(text: str) -> str:
     response_text = (text or "").strip()
     response_text = (
         response_text.removeprefix("```json")
+        .removeprefix("```JSON")
         .removeprefix("```")
         .removesuffix("```")
         .strip()
     )
     if "```" in response_text:
-        response_text = re.sub(r"```(?:json)?\s*", "", response_text)
+        response_text = re.sub(r"```(?:json|JSON)?\s*", "", response_text)
         response_text = response_text.replace("```", "").strip()
+    # 常见“聪明引号”/全角引号 → 标准 JSON
+    response_text = (
+        response_text.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\uff02", '"')
+    )
     return response_text
+
+
+def _extract_balanced_json_object(text: str) -> str | None:
+    """提取第一个花括号平衡的 JSON object（避免贪婪正则吃掉尾部废话）。"""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _repair_flash_json_fragment(fragment: str) -> str:
+    """轻量修复：尾逗号、单引号键/值（仅在标准 json.loads 失败后使用）。"""
+    s = fragment.strip()
+    s = re.sub(r",\s*}", "}", s)
+    s = re.sub(r",\s*]", "]", s)
+    # {'a': 1} → {"a": 1}（极简；失败则上层再兜底）
+    if "'" in s and '"' not in s:
+        s = s.replace("'", '"')
+    return s
+
+
+def _regex_flash_fields(text: str) -> dict[str, object] | None:
+    """JSON 彻底崩坏时，用正则抠 lynch_score / one_liner / ticker。"""
+    score_m = re.search(
+        r'"?lynch_score"?\s*[:=]\s*(\d{1,3})', text, flags=re.IGNORECASE,
+    )
+    if not score_m:
+        score_m = re.search(r'"?score"?\s*[:=]\s*(\d{1,3})', text, flags=re.IGNORECASE)
+    one_m = re.search(
+        r'"?one_liner"?\s*[:=]\s*"([^"]{1,80})"', text, flags=re.IGNORECASE,
+    )
+    if not one_m:
+        one_m = re.search(
+            r'"?one_liner"?\s*[:=]\s*[\'“]([^\'”]{1,80})[\'”]',
+            text,
+            flags=re.IGNORECASE,
+        )
+    if not score_m:
+        return None
+    tk_m = re.search(r'"?ticker"?\s*[:=]\s*"([A-Za-z0-9.\-]{1,12})"', text, flags=re.I)
+    return {
+        "ticker": (tk_m.group(1) if tk_m else ""),
+        "lynch_score": int(score_m.group(1)),
+        "one_liner": (one_m.group(1) if one_m else ""),
+    }
 
 
 def parse_flash_micro_json(text: str, *, ticker: str, name: str, company_type: str) -> FlashMicroScore:
@@ -311,16 +386,29 @@ def parse_flash_micro_json(text: str, *, ticker: str, name: str, company_type: s
     raw = (text or "").strip()
     try:
         cleaned = _clean_flash_json_text(raw)
+        data: object | None = None
         try:
             data = json.loads(cleaned)
         except json.JSONDecodeError:
-            match = re.search(r"\{[\s\S]*\}", cleaned)
-            if not match:
-                raise ValueError("no json object")
-            data = json.loads(match.group(0))
-        score = int(data.get("lynch_score", 0))
+            frag = _extract_balanced_json_object(cleaned) or ""
+            if frag:
+                try:
+                    data = json.loads(frag)
+                except json.JSONDecodeError:
+                    data = json.loads(_repair_flash_json_fragment(frag))
+        if not isinstance(data, dict):
+            # 偶发返回 [ {...} ]
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                data = data[0]
+            else:
+                data = _regex_flash_fields(cleaned)
+        if not isinstance(data, dict):
+            raise ValueError("no json object")
+
+        score_raw = data.get("lynch_score", data.get("score", 0))
+        score = int(float(score_raw)) if score_raw is not None and str(score_raw).strip() != "" else 0
         score = max(0, min(100, score))
-        one = str(data.get("one_liner") or "").strip().replace("\n", " ")
+        one = str(data.get("one_liner") or data.get("oneLiner") or "").strip().replace("\n", " ")
         if len(one) > 30:
             one = one[:30]
         tk = str(data.get("ticker") or ticker).strip().upper() or ticker
@@ -364,6 +452,20 @@ def _rate_limit_sleep(model: str) -> None:
         _last_call_mono[resolved] = time.monotonic()
 
 
+def _flash_generate_once(model: str, user_content: str) -> str:
+    """单次 Flash JSON 调用：强制 application/json + 关闭 thinking。"""
+    return llm.generate(
+        FLASH_MICRO_PROMPT,
+        user_content,
+        model=model,
+        max_tokens=llm.FLASH_MICRO_MAX_TOKENS,
+        skip_throttle=True,
+        response_mime_type="application/json",
+        response_json_schema=llm.FLASH_MICRO_JSON_SCHEMA,
+        thinking_budget=0,
+    )
+
+
 def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
     """Layer 2：强制 Flash 微 Prompt，只产出 JSON 评分。"""
     f, m = analysis.fundamentals, analysis.metrics
@@ -377,33 +479,53 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
     model = config.GEMINI_FLASH_MODEL
     micro = build_micro_data_block(f, m)
     user_content = f"请为下列标的打分并只输出 JSON：\n\n{micro}"
-    try:
-        _rate_limit_sleep(model)  # Flash 4.5s
-        text = llm.generate(
-            FLASH_MICRO_PROMPT,
-            user_content,
-            model=model,
-            max_tokens=llm.FLASH_MICRO_MAX_TOKENS,
-            skip_throttle=True,
+
+    last_api_exc: Exception | None = None
+    last_raw = ""
+    for _attempt in range(2):
+        _rate_limit_sleep(model)
+        try:
+            text = _flash_generate_once(model, user_content)
+        except Exception as exc:  # noqa: BLE001
+            last_api_exc = exc
+            last_raw = str(exc)[:300]
+            continue
+        last_raw = text
+        scored = parse_flash_micro_json(
+            text, ticker=f.ticker, name=name, company_type=ctype,
         )
-        return parse_flash_micro_json(text, ticker=f.ticker, name=name, company_type=ctype)
-    except Exception as exc:  # noqa: BLE001
-        hint = str(exc).replace("\n", " ")
+        if scored.parse_ok:
+            return scored
+        last_api_exc = None  # 有响应但解析失败
+
+    if last_api_exc is not None:
+        hint = str(last_api_exc).replace("\n", " ")
         if "NOT_FOUND" in hint or "not found" in hint.lower():
             short = "模型不可用/已下线"
-        elif "429" in hint or "ResourceExhausted" in hint:
+        elif "429" in hint or "ResourceExhausted" in hint or "quota" in hint.lower():
             short = "配额耗尽429"
+        elif "空内容" in hint:
+            short = "空响应"
         else:
-            short = type(exc).__name__
+            short = hint[:24] if hint else type(last_api_exc).__name__
         return FlashMicroScore(
             ticker=f.ticker,
             name=name,
             company_type=ctype,
             lynch_score=0,
             one_liner=f"Flash失败:{short}"[:30],
-            raw_response=str(exc)[:300],
+            raw_response=last_raw[:300],
             parse_ok=False,
         )
+    return FlashMicroScore(
+        ticker=f.ticker,
+        name=name,
+        company_type=ctype,
+        lynch_score=0,
+        one_liner="JSON解析失败",
+        raw_response=last_raw[:500],
+        parse_ok=False,
+    )
 
 
 def compute_layer3_flash_top_n(held_count: int) -> int:
@@ -425,10 +547,16 @@ def select_layer3_tickers(
     top_n: int | None = None,
     held_count: int | None = None,
 ) -> list[str]:
-    """Layer 3 名额：全部 held + Flash 评分 Top N（去重保序，held 永不因配额为 0 被截断）。"""
+    """Layer 3 名额：全部 held + Flash 评分 Top N（去重保序，held 永不因配额为 0 被截断）。
+
+    仅采纳 parse_ok=True 的 Flash 分；JSON/API 失败项不得挤占 Top N。
+    """
     hc = held_count if held_count is not None else len(held_tickers)
     n = compute_layer3_flash_top_n(hc) if top_n is None else max(0, top_n)
-    ranked = sorted(flash_scores, key=lambda s: (-s.lynch_score, s.ticker))
+    ranked = sorted(
+        [s for s in flash_scores if getattr(s, "parse_ok", True)],
+        key=lambda s: (-s.lynch_score, s.ticker),
+    )
     out: list[str] = []
     seen: set[str] = set()
     for t in held_tickers:
@@ -436,11 +564,16 @@ def select_layer3_tickers(
         if tu not in seen:
             seen.add(tu)
             out.append(tu)
-    for s in ranked[:n]:
+    flash_added = 0
+    for s in ranked:
+        if flash_added >= n:
+            break
         tu = config.correct_ticker(s.ticker).upper()
-        if tu not in seen:
-            seen.add(tu)
-            out.append(tu)
+        if tu in seen:
+            continue
+        seen.add(tu)
+        out.append(tu)
+        flash_added += 1
     return out
 
 

@@ -390,21 +390,38 @@ def render_flash_shortlist_table(
     """第二梯队：🔍 全境海选短评榜单（Layer 2 未进 Layer 3）。
 
     rows: (ticker, company_type, lynch_score, one_liner)
+    JSON/API 失败行不进主表，只在表尾汇总，避免周报尾部被「JSON解析失败」淹没。
     """
     if not rows:
         return ""
-    ranked = sorted(rows, key=lambda r: (-int(r[2]), r[0]))
+
+    def _is_flash_fail(one: str) -> bool:
+        s = (one or "").strip()
+        return s.startswith("JSON解析失败") or s.startswith("Flash失败:") or s.startswith("未配置GEMINI")
+
+    ok_rows = [r for r in rows if not _is_flash_fail(r[3])]
+    fail_n = len(rows) - len(ok_rows)
+    ranked = sorted(ok_rows, key=lambda r: (-int(r[2]), r[0]))
     lines = [
         "",
         "---",
         "",
-        f"## 🔍 全境海选短评榜单（Flash Layer 2 · {len(ranked)}只未进 Pro 终审）",
+        f"## 🔍 全境海选短评榜单（Flash Layer 2 · {len(ranked)}只有效评分未进 Pro 终审）",
         "",
         "*Token 节食扫射结果：仅 JSON 评分 + 一句话，无长文会诊。*",
         "",
+    ]
+    if fail_n:
+        lines.append(f"*另有 {fail_n} 只 Flash 调用/解析失败，已从本表剔除（不影响 held 进 L3）。*")
+        lines.append("")
+    if not ranked:
+        lines.append("> 本次无有效 Flash 短评（全部解析失败或均已进入 Pro）。")
+        lines.append("")
+        return "\n".join(lines)
+    lines.extend([
         "| 代码 | 林奇分类 | 林奇评分 (Score) | 一句话简评 (One Liner) |",
         "| --- | --- | ---: | --- |",
-    ]
+    ])
     for ticker, ctype, score, one in ranked:
         safe_one = (one or "").replace("|", "/").replace("\n", " ")
         safe_type = (ctype or "—").replace("|", "/")

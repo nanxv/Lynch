@@ -88,6 +88,52 @@ def test_parse_flash_micro_json_removeprefix_chain():
     assert s.lynch_score == 66
 
 
+def test_parse_flash_micro_json_trailing_noise_and_comma():
+    raw = '思考完毕。\n{"ticker":"ABBV","lynch_score":71,"one_liner":"PEG尚可",}\n谢谢'
+    s = parse_flash_micro_json(raw, ticker="ABBV", name="AbbVie", company_type="稳定增长型")
+    assert s.parse_ok
+    assert s.lynch_score == 71
+
+
+def test_parse_flash_micro_json_regex_fallback_unbalanced():
+    raw = '{"note":"x", "lynch_score":64, "one_liner":"现金流稳但估值贵"'
+    s = parse_flash_micro_json(raw, ticker="MSFT", name="MSFT", company_type="稳定增长型")
+    assert s.parse_ok
+    assert s.lynch_score == 64
+
+
+def test_parse_flash_micro_json_smart_quotes_and_score_alias():
+    raw = '{“ticker”: “PFE”, “score”: 55, “one_liner”: “周转尚可”}'
+    s = parse_flash_micro_json(raw, ticker="PFE", name="Pfizer", company_type="稳定增长型")
+    assert s.parse_ok
+    assert s.lynch_score == 55
+
+
+def test_select_layer3_skips_parse_failures():
+    held = {"H1"}
+    scores = [
+        FlashMicroScore("BAD", "B", "—", 0, "JSON解析失败", parse_ok=False),
+        FlashMicroScore("GOOD", "G", "快增", 88, "PEG低", parse_ok=True),
+        FlashMicroScore("MID", "M", "稳增", 70, "还行", parse_ok=True),
+    ]
+    out = select_layer3_tickers(held, scores, top_n=1)
+    assert out[0] == "H1"
+    assert "GOOD" in out
+    assert "BAD" not in out
+
+
+def test_render_flash_shortlist_hides_parse_failures():
+    md = render_flash_shortlist_table([
+        ("OK", "快增", 80, "PEG低"),
+        ("BAD", "稳增", 0, "JSON解析失败"),
+        ("ERR", "稳增", 0, "Flash失败:空响应"),
+    ])
+    assert "OK" in md
+    assert "JSON解析失败" not in md
+    assert "Flash失败" not in md
+    assert "2 只 Flash 调用/解析失败" in md
+
+
 @patch("src.lynch.three_layer.llm.is_configured", return_value=True)
 @patch("src.lynch.three_layer.flash_micro_score")
 @patch("src.lynch.three_layer.analyze_company")
