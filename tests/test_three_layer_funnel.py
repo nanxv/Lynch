@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from src.lynch.agent import (
     FlashMicroScore,
     LynchAnalysis,
+    clean_and_parse_json,
     compute_layer3_flash_top_n,
     parse_flash_micro_json,
     select_layer3_tickers,
@@ -88,6 +89,17 @@ def test_parse_flash_micro_json_removeprefix_chain():
     assert s.lynch_score == 66
 
 
+def test_clean_and_parse_json_strips_think_tags():
+    raw = (
+        "<think>先分析一通……</think>\n"
+        '```json\n{"ticker":"ABBV","lynch_score":71,"one_liner":"PEG尚可"}\n```\n'
+        "额外废话"
+    )
+    data = clean_and_parse_json(raw)
+    assert data["ticker"] == "ABBV"
+    assert data["lynch_score"] == 71
+
+
 def test_parse_flash_micro_json_trailing_noise_and_comma():
     raw = '思考完毕。\n{"ticker":"ABBV","lynch_score":71,"one_liner":"PEG尚可",}\n谢谢'
     s = parse_flash_micro_json(raw, ticker="ABBV", name="AbbVie", company_type="稳定增长型")
@@ -95,11 +107,13 @@ def test_parse_flash_micro_json_trailing_noise_and_comma():
     assert s.lynch_score == 71
 
 
-def test_parse_flash_micro_json_regex_fallback_unbalanced():
-    raw = '{"note":"x", "lynch_score":64, "one_liner":"现金流稳但估值贵"'
-    s = parse_flash_micro_json(raw, ticker="MSFT", name="MSFT", company_type="稳定增长型")
-    assert s.parse_ok
-    assert s.lynch_score == 64
+def test_parse_flash_micro_json_empty_logs_and_zeros(capsys):
+    s = parse_flash_micro_json("", ticker="PFE", name="Pfizer", company_type="稳定增长型")
+    assert not s.parse_ok
+    assert s.lynch_score == 0
+    assert "JSON解析失败" in s.one_liner
+    err = capsys.readouterr().out
+    assert "[JSON解析失败] Ticker: PFE" in err
 
 
 def test_parse_flash_micro_json_smart_quotes_and_score_alias():
@@ -132,6 +146,12 @@ def test_render_flash_shortlist_hides_parse_failures():
     assert "JSON解析失败" not in md
     assert "Flash失败" not in md
     assert "2 只 Flash 调用/解析失败" in md
+
+
+def test_flash_micro_max_tokens_has_thinking_headroom():
+    from src.lynch import llm as llm_mod
+
+    assert llm_mod.FLASH_MICRO_MAX_TOKENS >= 1024
 
 
 @patch("src.lynch.three_layer.llm.is_configured", return_value=True)

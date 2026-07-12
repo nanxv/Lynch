@@ -22,10 +22,10 @@ _FALLBACK_MODEL = FLASH_MODEL or "gemini-2.5-flash"
 # 兼容旧 GEMINI_MODEL：未设则默认 Flash（节食）
 DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip() or _FALLBACK_MODEL
 SNIPER_DRILL_MAX_TOKENS = 2048
-# Flash 微评分：强制 JSON + thinking_budget=0 后不再需要给思考预留大额度
-FLASH_MICRO_MAX_TOKENS = 512
+# Layer 2 Flash：必须给足 max_output_tokens，留给 2.5「思考」空间，避免 JSON 被截断 → 空响应/LLMError
+FLASH_MICRO_MAX_TOKENS = 2048
 
-# Layer 2 Flash 结构化输出 schema（与 FLASH_MICRO_PROMPT 字段对齐）
+# Layer 2 Flash 结构化输出 schema（与 FLASH_MICRO_PROMPT 字段对齐；辅助，非强制关掉思考）
 FLASH_MICRO_JSON_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -112,8 +112,8 @@ def generate(
 ) -> str:
     """调用 Gemini 生成内容（默认按模型节流；agent 可先 throttle 再 skip）。
 
-    Flash 微评分应传 response_mime_type='application/json' + thinking_budget=0，
-    避免 2.5 思考 token 吃光 max_output_tokens 导致空响应 / JSON 脱轨。
+    Flash 微评分：拉高 max_output_tokens（见 FLASH_MICRO_MAX_TOKENS）给思考留空间；
+    可选用 response_mime_type='application/json' 辅助结构化输出。
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:

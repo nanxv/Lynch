@@ -291,120 +291,50 @@ def build_micro_data_block(f: Fundamentals, m: LynchMetrics) -> str:
     return "\n".join(lines)
 
 
-def _clean_flash_json_text(text: str) -> str:
-    """榨出 Flash 模型回复中的裸 JSON（剥离 Markdown 围栏与首尾噪音）。"""
-    response_text = (text or "").strip()
-    response_text = (
-        response_text.removeprefix("```json")
-        .removeprefix("```JSON")
-        .removeprefix("```")
-        .removesuffix("```")
-        .strip()
-    )
-    if "```" in response_text:
-        response_text = re.sub(r"```(?:json|JSON)?\s*", "", response_text)
-        response_text = response_text.replace("```", "").strip()
-    # 常见“聪明引号”/全角引号 → 标准 JSON
-    response_text = (
-        response_text.replace("\u201c", '"')
+def clean_and_parse_json(llm_output: str) -> dict:
+    """抗思考链 JSON 提取器：剔除 <think> / Markdown 围栏后截取 {...} 再 loads。
+
+    专供 Layer 2 Flash（及任何强校验 JSON 的路径）。失败抛 ValueError / JSONDecodeError。
+    """
+    if not llm_output or not str(llm_output).strip():
+        raise ValueError("LLM 返回了空响应 (可能因 Token 耗尽或超载)")
+
+    cleaned = str(llm_output)
+    # 1. 剔除思考过程标签（含常见变体）
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thinking>.*?</thinking>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    # 2. 移除 Markdown 代码块标记
+    cleaned = re.sub(r"```(?:json|JSON)?", "", cleaned).strip()
+    cleaned = cleaned.replace("```", "").strip()
+    # 聪明引号 → 标准引号
+    cleaned = (
+        cleaned.replace("\u201c", '"')
         .replace("\u201d", '"')
         .replace("\u2018", "'")
         .replace("\u2019", "'")
         .replace("\uff02", '"')
     )
-    return response_text
-
-
-def _extract_balanced_json_object(text: str) -> str | None:
-    """提取第一个花括号平衡的 JSON object（避免贪婪正则吃掉尾部废话）。"""
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    in_str = False
-    escape = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
-
-
-def _repair_flash_json_fragment(fragment: str) -> str:
-    """轻量修复：尾逗号、单引号键/值（仅在标准 json.loads 失败后使用）。"""
-    s = fragment.strip()
-    s = re.sub(r",\s*}", "}", s)
-    s = re.sub(r",\s*]", "]", s)
-    # {'a': 1} → {"a": 1}（极简；失败则上层再兜底）
-    if "'" in s and '"' not in s:
-        s = s.replace("'", '"')
-    return s
-
-
-def _regex_flash_fields(text: str) -> dict[str, object] | None:
-    """JSON 彻底崩坏时，用正则抠 lynch_score / one_liner / ticker。"""
-    score_m = re.search(
-        r'"?lynch_score"?\s*[:=]\s*(\d{1,3})', text, flags=re.IGNORECASE,
-    )
-    if not score_m:
-        score_m = re.search(r'"?score"?\s*[:=]\s*(\d{1,3})', text, flags=re.IGNORECASE)
-    one_m = re.search(
-        r'"?one_liner"?\s*[:=]\s*"([^"]{1,80})"', text, flags=re.IGNORECASE,
-    )
-    if not one_m:
-        one_m = re.search(
-            r'"?one_liner"?\s*[:=]\s*[\'“]([^\'”]{1,80})[\'”]',
-            text,
-            flags=re.IGNORECASE,
-        )
-    if not score_m:
-        return None
-    tk_m = re.search(r'"?ticker"?\s*[:=]\s*"([A-Za-z0-9.\-]{1,12})"', text, flags=re.I)
-    return {
-        "ticker": (tk_m.group(1) if tk_m else ""),
-        "lynch_score": int(score_m.group(1)),
-        "one_liner": (one_m.group(1) if one_m else ""),
-    }
+    # 3. 贪婪匹配：第一个 '{' 到最后一个 '}'
+    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if not match:
+        raise ValueError(f"未找到 JSON 结构。原始清洗后文本: {cleaned[:100]}...")
+    fragment = match.group(0)
+    # 轻量修复尾逗号（模型常见瑕疵）
+    fragment = re.sub(r",\s*}", "}", fragment)
+    fragment = re.sub(r",\s*]", "]", fragment)
+    data = json.loads(fragment)
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON 根类型不是 object: {type(data).__name__}")
+    return data
 
 
 def parse_flash_micro_json(text: str, *, ticker: str, name: str, company_type: str) -> FlashMicroScore:
-    """健壮解析 Flash 微评分 JSON；失败时降级为 score=0，不抛异常。"""
+    """健壮解析 Flash 微评分 JSON；失败时降级为 score=0，不抛异常、不阻塞下一只。"""
     raw = (text or "").strip()
     try:
-        cleaned = _clean_flash_json_text(raw)
-        data: object | None = None
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            frag = _extract_balanced_json_object(cleaned) or ""
-            if frag:
-                try:
-                    data = json.loads(frag)
-                except json.JSONDecodeError:
-                    data = json.loads(_repair_flash_json_fragment(frag))
-        if not isinstance(data, dict):
-            # 偶发返回 [ {...} ]
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                data = data[0]
-            else:
-                data = _regex_flash_fields(cleaned)
-        if not isinstance(data, dict):
-            raise ValueError("no json object")
-
+        data = clean_and_parse_json(raw)
         score_raw = data.get("lynch_score", data.get("score", 0))
         score = int(float(score_raw)) if score_raw is not None and str(score_raw).strip() != "" else 0
         score = max(0, min(100, score))
@@ -421,7 +351,21 @@ def parse_flash_micro_json(text: str, *, ticker: str, name: str, company_type: s
             raw_response=raw,
             parse_ok=True,
         )
-    except Exception:  # noqa: BLE001
+    except (ValueError, json.JSONDecodeError, TypeError) as exc:
+        reason = str(exc).replace("\n", " ")[:160]
+        print(f"[JSON解析失败] Ticker: {ticker}, 原因: {reason}")
+        return FlashMicroScore(
+            ticker=ticker,
+            name=name,
+            company_type=company_type,
+            lynch_score=0,
+            one_liner="JSON解析失败",
+            raw_response=raw[:500],
+            parse_ok=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        reason = str(exc).replace("\n", " ")[:160]
+        print(f"[JSON解析失败] Ticker: {ticker}, 原因: {reason}")
         return FlashMicroScore(
             ticker=ticker,
             name=name,
@@ -453,16 +397,16 @@ def _rate_limit_sleep(model: str) -> None:
 
 
 def _flash_generate_once(model: str, user_content: str) -> str:
-    """单次 Flash JSON 调用：强制 application/json + 关闭 thinking。"""
+    """单次 Flash JSON 调用：max_output_tokens=2048 给思考留空间；mime=json 辅助。"""
     return llm.generate(
         FLASH_MICRO_PROMPT,
         user_content,
         model=model,
-        max_tokens=llm.FLASH_MICRO_MAX_TOKENS,
+        max_tokens=llm.FLASH_MICRO_MAX_TOKENS,  # 2048：防思考截断
         skip_throttle=True,
         response_mime_type="application/json",
         response_json_schema=llm.FLASH_MICRO_JSON_SCHEMA,
-        thinking_budget=0,
+        # 免费档：不强制 thinking_budget=0；靠扩容 max_output_tokens 容纳思考
     )
 
 
