@@ -27,6 +27,7 @@ def test_parse_flash_micro_json_clean():
 
 
 def test_parse_flash_micro_json_fenced_and_noise():
+    """JSON Mode 下不应再依赖围栏清洗；夹带废话时降级为 score=0。"""
     raw = """好的，结果如下：
 ```json
 {"ticker": "AAA", "lynch_score": 120, "one_liner": "这是一句超过三十个汉字的超长短评内容应该被截断处理掉才对"}
@@ -34,8 +35,16 @@ def test_parse_flash_micro_json_fenced_and_noise():
 额外废话
 """
     s = parse_flash_micro_json(raw, ticker="AAA", name="A", company_type="稳定增长型")
+    assert not s.parse_ok
+    assert s.lynch_score == 0
+    assert "JSON解析失败" in s.one_liner
+
+
+def test_parse_flash_micro_json_clamps_score():
+    raw = '{"ticker":"AAA","lynch_score":120,"one_liner":"这是一句超过三十个汉字的超长短评内容应该被截断处理掉才对"}'
+    s = parse_flash_micro_json(raw, ticker="AAA", name="A", company_type="稳定增长型")
     assert s.parse_ok
-    assert s.lynch_score == 100  # clamped
+    assert s.lynch_score == 100
     assert len(s.one_liner) <= 30
 
 
