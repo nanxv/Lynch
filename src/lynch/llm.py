@@ -22,10 +22,11 @@ _FALLBACK_MODEL = FLASH_MODEL or "gemini-2.5-flash"
 # 兼容旧 GEMINI_MODEL：未设则默认 Flash（节食）
 DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip() or _FALLBACK_MODEL
 SNIPER_DRILL_MAX_TOKENS = 2048
-# Layer 2 Flash：必须给足 max_output_tokens，留给 2.5「思考」空间，避免 JSON 被截断 → 空响应/LLMError
-FLASH_MICRO_MAX_TOKENS = 2048
+# Layer 2 Flash：原生 JSON Mode 下纯短 JSON，保持低上限以节省免费档额度
+FLASH_MICRO_MAX_TOKENS = 200
+FLASH_MICRO_TEMPERATURE = 0.2
 
-# Layer 2 Flash 结构化输出 schema（与 FLASH_MICRO_PROMPT 字段对齐；辅助，非强制关掉思考）
+# Layer 2 Flash 结构化输出 schema（与 FLASH_MICRO_PROMPT 字段对齐）
 FLASH_MICRO_JSON_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -109,11 +110,12 @@ def generate(
     response_mime_type: str | None = None,
     response_json_schema: dict | None = None,
     thinking_budget: int | None = None,
+    temperature: float | None = None,
 ) -> str:
     """调用 Gemini 生成内容（默认按模型节流；agent 可先 throttle 再 skip）。
 
-    Flash 微评分：拉高 max_output_tokens（见 FLASH_MICRO_MAX_TOKENS）给思考留空间；
-    可选用 response_mime_type='application/json' 辅助结构化输出。
+    Layer 2 Flash：response_mime_type='application/json' + 低 max_output_tokens + 低 temperature，
+    从 API 层禁止 Markdown/<think>，节省免费档额度。
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -133,10 +135,11 @@ def generate(
         "system_instruction": system_prompt,
         "max_output_tokens": max_tokens,
     }
+    if temperature is not None:
+        cfg_kwargs["temperature"] = float(temperature)
     if response_mime_type:
         cfg_kwargs["response_mime_type"] = response_mime_type
     if response_json_schema is not None:
-        # google-genai 新旧字段名兼容
         cfg_kwargs["response_json_schema"] = response_json_schema
     if thinking_budget is not None:
         try:
@@ -144,7 +147,6 @@ def generate(
                 thinking_budget=int(thinking_budget),
             )
         except Exception:  # noqa: BLE001
-            # 旧 SDK / 不支持 thinking 的模型：忽略，靠 JSON mime 兜底
             pass
 
     client = genai.Client(api_key=api_key)
@@ -155,11 +157,12 @@ def generate(
             config=types.GenerateContentConfig(**cfg_kwargs),
         )
     except TypeError:
-        # 部分 SDK 版本不认 response_json_schema / thinking_config：降级重试
         soft = {
             "system_instruction": system_prompt,
             "max_output_tokens": max_tokens,
         }
+        if temperature is not None:
+            soft["temperature"] = float(temperature)
         if response_mime_type:
             soft["response_mime_type"] = response_mime_type
         try:
@@ -183,5 +186,5 @@ def generate(
         except Exception:  # noqa: BLE001
             finish = ""
         hint = f"（finish={finish}）" if finish else ""
-        raise LLMError(f"Gemini 返回空内容{hint}（可能思考占满输出或触发安全过滤）。")
+        raise LLMError(f"Gemini 返回空内容{hint}（可能触发安全过滤或输出上限）。")
     return text

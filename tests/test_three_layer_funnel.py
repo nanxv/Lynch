@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 from src.lynch.agent import (
     FlashMicroScore,
     LynchAnalysis,
-    clean_and_parse_json,
     compute_layer3_flash_top_n,
     parse_flash_micro_json,
+    parse_flash_response,
     select_layer3_tickers,
 )
 from src.lynch.data.base import QuickScreen
@@ -83,28 +83,26 @@ def test_compute_layer3_flash_top_n():
 
 
 def test_parse_flash_micro_json_removeprefix_chain():
-    raw = '```json\n{"ticker":"X","lynch_score":66,"one_liner":"测试"}\n```'
+    # JSON Mode 下通常无围栏；若偶发夹带，轻量 loads 可能失败 → score=0
+    raw = '{"ticker":"X","lynch_score":66,"one_liner":"测试"}'
     s = parse_flash_micro_json(raw, ticker="X", name="X", company_type="—")
     assert s.parse_ok
     assert s.lynch_score == 66
 
 
-def test_clean_and_parse_json_strips_think_tags():
-    raw = (
-        "<think>先分析一通……</think>\n"
-        '```json\n{"ticker":"ABBV","lynch_score":71,"one_liner":"PEG尚可"}\n```\n'
-        "额外废话"
+def test_parse_flash_response_pure_json():
+    data = parse_flash_response(
+        '{"ticker":"ABBV","lynch_score":71,"one_liner":"PEG尚可"}'
     )
-    data = clean_and_parse_json(raw)
     assert data["ticker"] == "ABBV"
     assert data["lynch_score"] == 71
 
 
-def test_parse_flash_micro_json_trailing_noise_and_comma():
-    raw = '思考完毕。\n{"ticker":"ABBV","lynch_score":71,"one_liner":"PEG尚可",}\n谢谢'
-    s = parse_flash_micro_json(raw, ticker="ABBV", name="AbbVie", company_type="稳定增长型")
-    assert s.parse_ok
-    assert s.lynch_score == 71
+def test_parse_flash_response_garbage(capsys):
+    data = parse_flash_response("not json at all")
+    assert data["lynch_score"] == 0
+    assert data["one_liner"] == "JSON解析失败"
+    assert "[Layer 2 严重错误]" in capsys.readouterr().out
 
 
 def test_parse_flash_micro_json_empty_logs_and_zeros(capsys):
@@ -113,11 +111,11 @@ def test_parse_flash_micro_json_empty_logs_and_zeros(capsys):
     assert s.lynch_score == 0
     assert "JSON解析失败" in s.one_liner
     err = capsys.readouterr().out
-    assert "[JSON解析失败] Ticker: PFE" in err
+    assert "[Layer 2 严重错误]" in err or "[JSON解析失败] Ticker: PFE" in err
 
 
-def test_parse_flash_micro_json_smart_quotes_and_score_alias():
-    raw = '{“ticker”: “PFE”, “score”: 55, “one_liner”: “周转尚可”}'
+def test_parse_flash_micro_json_score_alias():
+    raw = '{"ticker":"PFE","score":55,"one_liner":"周转尚可"}'
     s = parse_flash_micro_json(raw, ticker="PFE", name="Pfizer", company_type="稳定增长型")
     assert s.parse_ok
     assert s.lynch_score == 55
@@ -148,10 +146,11 @@ def test_render_flash_shortlist_hides_parse_failures():
     assert "2 只 Flash 调用/解析失败" in md
 
 
-def test_flash_micro_max_tokens_has_thinking_headroom():
+def test_flash_micro_max_tokens_stays_lean():
     from src.lynch import llm as llm_mod
 
-    assert llm_mod.FLASH_MICRO_MAX_TOKENS >= 1024
+    assert llm_mod.FLASH_MICRO_MAX_TOKENS == 200
+    assert llm_mod.FLASH_MICRO_TEMPERATURE == 0.2
 
 
 @patch("src.lynch.three_layer.llm.is_configured", return_value=True)
