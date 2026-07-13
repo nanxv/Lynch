@@ -5,10 +5,13 @@ from __future__ import annotations
 import os
 import threading
 import time
+from typing import Literal
 
 from . import config
 from .prompt import TASK_PROMPTS
 from .watchlist import normalize_user_status
+
+ApiTier = Literal["flash", "pro"]
 
 
 class LLMError(Exception):
@@ -40,31 +43,66 @@ FLASH_MICRO_JSON_SCHEMA: dict = {
 _last_call_mono: dict[str, float] = {}
 _throttle_lock = threading.Lock()
 
-# 免费档 / 预付额度熔断：一旦确认 credits depleted / RESOURCE_EXHAUSTED，本进程内停止继续打 Gemini
+# 按档位熔断：Flash / Pro 双 Key 互不影响（一侧额度耗尽另一侧仍可跑）
 _gemini_circuit_lock = threading.Lock()
-_gemini_circuit_open = False
-_gemini_circuit_reason = ""
+_gemini_circuit_open: dict[ApiTier, bool] = {"flash": False, "pro": False}
+_gemini_circuit_reason: dict[ApiTier, str] = {"flash": "", "pro": ""}
 
 
-def gemini_circuit_is_open() -> bool:
-    return _gemini_circuit_open
+def _env_key(*names: str) -> str:
+    for name in names:
+        val = (os.getenv(name) or "").strip()
+        if val:
+            return val
+    return ""
 
 
-def gemini_circuit_reason() -> str:
-    return _gemini_circuit_reason or "Gemini额度耗尽"
+def resolve_api_tier(model: str | None = None, *, api_tier: ApiTier | None = None) -> ApiTier:
+    """硬路由档位：显式 api_tier 优先，否则按模型名含 pro 判定。"""
+    if api_tier in ("flash", "pro"):
+        return api_tier
+    return "pro" if is_pro_model(model or "") else "flash"
 
 
-def trip_gemini_circuit(reason: str) -> None:
-    global _gemini_circuit_open, _gemini_circuit_reason
+def resolve_api_key(model: str | None = None, *, api_tier: ApiTier | None = None) -> str:
+    """按档位取 Key；专用 Key 未设时 fallback 到 GEMINI_API_KEY。"""
+    legacy = _env_key("GEMINI_API_KEY") or (config.GEMINI_API_KEY or "").strip()
+    flash = _env_key("GEMINI_FLASH_API_KEY") or (config.GEMINI_FLASH_API_KEY or "").strip() or legacy
+    pro = _env_key("GEMINI_PRO_API_KEY") or (config.GEMINI_PRO_API_KEY or "").strip() or legacy
+    tier = resolve_api_tier(model, api_tier=api_tier)
+    return pro if tier == "pro" else flash
+
+
+def gemini_circuit_is_open(api_tier: ApiTier | None = None) -> bool:
+    if api_tier is None:
+        return any(_gemini_circuit_open.values())
+    return bool(_gemini_circuit_open.get(api_tier))
+
+
+def gemini_circuit_reason(api_tier: ApiTier | None = None) -> str:
+    if api_tier is None:
+        for tier in ("flash", "pro"):
+            if _gemini_circuit_open.get(tier):
+                return _gemini_circuit_reason.get(tier) or f"Gemini {tier} 额度耗尽"
+        return "Gemini额度耗尽"
+    return _gemini_circuit_reason.get(api_tier) or f"Gemini {api_tier} 额度耗尽"
+
+
+def trip_gemini_circuit(reason: str, *, api_tier: ApiTier = "flash") -> None:
     with _gemini_circuit_lock:
-        if not _gemini_circuit_open:
-            _gemini_circuit_open = True
-            _gemini_circuit_reason = (reason or "RESOURCE_EXHAUSTED").replace("\n", " ")[:200]
-            print(
-                f"🛑 Gemini 熔断已开启：{_gemini_circuit_reason}\n"
-                "   本轮剩余 Flash/Pro 将跳过，避免空转。请确认 GEMINI_API_KEY 为 AI Studio【免费档】"
-                "（非预付费项目），见 https://aistudio.google.com/apikey"
-            )
+        if _gemini_circuit_open.get(api_tier):
+            return
+        _gemini_circuit_open[api_tier] = True
+        _gemini_circuit_reason[api_tier] = (reason or "RESOURCE_EXHAUSTED").replace("\n", " ")[:200]
+        key_hint = (
+            "GEMINI_FLASH_API_KEY" if api_tier == "flash" else "GEMINI_PRO_API_KEY"
+        )
+        print(
+            f"🛑 Gemini {api_tier} 熔断已开启：{_gemini_circuit_reason[api_tier]}\n"
+            f"   本轮该档位剩余调用将跳过（另一档位不受影响）。"
+            f"请确认 {key_hint} / GEMINI_API_KEY 为 AI Studio【免费档】，"
+            "见 https://aistudio.google.com/apikey"
+        )
 
 
 def is_gemini_quota_error(exc: BaseException | str) -> bool:
@@ -91,7 +129,16 @@ def get_mode_context(mode: str, user_status: str = "watch") -> str:
 
 
 def is_configured() -> bool:
-    return bool(os.getenv("GEMINI_API_KEY"))
+    """任一档位有可用 Key（含 legacy GEMINI_API_KEY）即视为已配置。"""
+    return bool(resolve_api_key(api_tier="flash") or resolve_api_key(api_tier="pro"))
+
+
+def is_flash_configured() -> bool:
+    return bool(resolve_api_key(api_tier="flash"))
+
+
+def is_pro_configured() -> bool:
+    return bool(resolve_api_key(api_tier="pro"))
 
 
 def is_pro_model(model: str) -> bool:
@@ -148,18 +195,25 @@ def generate(
     response_json_schema: dict | None = None,
     thinking_budget: int | None = None,
     temperature: float | None = None,
+    api_tier: ApiTier | None = None,
 ) -> str:
     """调用 Gemini 生成内容（默认按模型节流；agent 可先 throttle 再 skip）。
 
     Layer 2 Flash：response_mime_type='application/json' + 低 max_output_tokens + 低 temperature，
     从 API 层禁止 Markdown/<think>，节省免费档额度。
-    """
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise LLMError("未设置 GEMINI_API_KEY，无法生成 LLM 叙述（可用 --data-only 仅看硬指标）。")
 
-    if gemini_circuit_is_open():
-        raise LLMError(f"Gemini 已熔断（{gemini_circuit_reason()}），跳过调用。")
+    api_tier='flash'|'pro'：硬路由到对应 API Key（未设则 fallback GEMINI_API_KEY）。
+    """
+    tier = resolve_api_tier(model, api_tier=api_tier)
+    api_key = resolve_api_key(model, api_tier=tier)
+    if not api_key:
+        raise LLMError(
+            "未设置 GEMINI_FLASH_API_KEY / GEMINI_PRO_API_KEY / GEMINI_API_KEY，"
+            "无法生成 LLM 叙述（可用 --data-only 仅看硬指标）。"
+        )
+
+    if gemini_circuit_is_open(tier):
+        raise LLMError(f"Gemini {tier} 已熔断（{gemini_circuit_reason(tier)}），跳过调用。")
 
     try:
         from google import genai
@@ -213,11 +267,11 @@ def generate(
             )
         except Exception as exc:  # noqa: BLE001
             if is_gemini_quota_error(exc):
-                trip_gemini_circuit(str(exc))
+                trip_gemini_circuit(str(exc), api_tier=tier)
             raise LLMError(f"Gemini 调用失败：{exc}") from exc
     except Exception as exc:  # noqa: BLE001
         if is_gemini_quota_error(exc):
-            trip_gemini_circuit(str(exc))
+            trip_gemini_circuit(str(exc), api_tier=tier)
         raise LLMError(f"Gemini 调用失败：{exc}") from exc
 
     text = _extract_response_text(resp)

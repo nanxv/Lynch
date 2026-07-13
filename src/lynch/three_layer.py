@@ -52,7 +52,7 @@ def run_layer2_and_select_layer3(
     held_tickers: set[str] = set()
     counts = {"analyzed": 0, "flash": 0, "pro": 0, "data_only": 0, "ai": 0}
 
-    ai_ok = llm.is_configured()
+    ai_ok = llm.is_flash_configured()
     flash_skipped_after_circuit = 0
 
     for q in working:
@@ -86,7 +86,7 @@ def run_layer2_and_select_layer3(
                     parse_ok=False,
                 ))
                 continue
-            if llm.gemini_circuit_is_open():
+            if llm.gemini_circuit_is_open("flash"):
                 flash_skipped_after_circuit += 1
                 flash_scores.append(FlashMicroScore(
                     ticker=a.ticker,
@@ -112,8 +112,8 @@ def run_layer2_and_select_layer3(
 
     if flash_skipped_after_circuit:
         print(
-            f"🛑 L2 因 Gemini 熔断跳过剩余 {flash_skipped_after_circuit} 只 Flash "
-            f"（{llm.gemini_circuit_reason()}）"
+            f"🛑 L2 因 Gemini Flash 熔断跳过剩余 {flash_skipped_after_circuit} 只 "
+            f"（{llm.gemini_circuit_reason('flash')}）"
         )
 
     flash_top_n = compute_layer3_flash_top_n(len(held_tickers))
@@ -156,16 +156,16 @@ def run_layer3_pro(
 ) -> dict[str, LynchAnalysis]:
     """对 L3 合并队列（held + Flash TopN）强制 Pro 深度会诊。"""
     out: dict[str, LynchAnalysis] = dict(prior_analyses or {})
-    if not llm.is_configured():
-        print("⚠️  未配置 GEMINI_API_KEY，跳过 L3 Pro 终审。")
+    if not llm.is_pro_configured():
+        print("⚠️  未配置 GEMINI_PRO_API_KEY / GEMINI_API_KEY，跳过 L3 Pro 终审。")
         return out
     if not layer3_queue:
         print("⚠️  L3 Pro 队列为空（不应发生：held 应始终入队）。")
         return out
 
-    if llm.gemini_circuit_is_open():
+    if llm.gemini_circuit_is_open("pro"):
         print(
-            f"🛑 Gemini 已熔断（{llm.gemini_circuit_reason()}），跳过全部 L3 Pro 终审。"
+            f"🛑 Gemini Pro 已熔断（{llm.gemini_circuit_reason('pro')}），跳过全部 L3 Pro 终审。"
         )
         return out
 
@@ -173,11 +173,11 @@ def run_layer3_pro(
     print(f"🎩 L3 Pro 队列 {len(layer3_queue)} 只 → `{pro_model}`\n")
 
     for idx, raw_ticker in enumerate(layer3_queue):
-        if llm.gemini_circuit_is_open():
+        if llm.gemini_circuit_is_open("pro"):
             remaining = len(layer3_queue) - idx
             print(
-                f"🛑 Gemini 熔断，跳过剩余 {remaining} 只 L3 Pro "
-                f"（{llm.gemini_circuit_reason()}）"
+                f"🛑 Gemini Pro 熔断，跳过剩余 {remaining} 只 L3 "
+                f"（{llm.gemini_circuit_reason('pro')}）"
             )
             break
         ticker = _ticker_key(raw_ticker)

@@ -34,9 +34,11 @@ def has_book_index() -> bool:
 
 def embed_texts(texts: list[str], *, task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
     """用 Gemini 向量化一批文本。失败/未配置则抛异常，由调用方决定降级。"""
-    api_key = os.getenv("GEMINI_API_KEY")
+    from .llm import resolve_api_key
+
+    api_key = resolve_api_key(api_tier="flash")
     if not api_key:
-        raise RuntimeError("未配置 GEMINI_API_KEY，无法向量化。")
+        raise RuntimeError("未配置 GEMINI_FLASH_API_KEY / GEMINI_API_KEY，无法向量化。")
     from google import genai
     from google.genai import types
 

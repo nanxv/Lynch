@@ -377,7 +377,7 @@ def _rate_limit_sleep(model: str) -> None:
 
 
 def _flash_generate_once(model: str, user_content: str) -> str:
-    """Layer 2：原生 JSON Mode + 低温 + 低 max_tokens；关闭思考以免白烧免费额度。"""
+    """Layer 2：原生 JSON Mode + 低温 + 低 max_tokens；强制 Flash Key 硬路由。"""
     return llm.generate(
         FLASH_MICRO_PROMPT,
         user_content,
@@ -388,6 +388,7 @@ def _flash_generate_once(model: str, user_content: str) -> str:
         response_json_schema=llm.FLASH_MICRO_JSON_SCHEMA,
         temperature=llm.FLASH_MICRO_TEMPERATURE,
         thinking_budget=0,  # 免费档：禁止思考链占额度；JSON Mode 负责结构
+        api_tier="flash",
     )
 
 
@@ -396,12 +397,12 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
     f, m = analysis.fundamentals, analysis.metrics
     name = f.name or f.ticker
     ctype = m.company_type or ""
-    if not llm.is_configured():
+    if not llm.is_flash_configured():
         return FlashMicroScore(
             ticker=f.ticker, name=name, company_type=ctype,
             lynch_score=0, one_liner="未配置GEMINI", parse_ok=False,
         )
-    if llm.gemini_circuit_is_open():
+    if llm.gemini_circuit_is_open("flash"):
         return FlashMicroScore(
             ticker=f.ticker,
             name=name,
@@ -417,7 +418,7 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
     last_api_exc: Exception | None = None
     last_raw = ""
     for _attempt in range(2):
-        if llm.gemini_circuit_is_open():
+        if llm.gemini_circuit_is_open("flash"):
             break
         _rate_limit_sleep(model)
         try:
@@ -455,7 +456,7 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
             raw_response=last_raw[:300],
             parse_ok=False,
         )
-    if llm.gemini_circuit_is_open():
+    if llm.gemini_circuit_is_open("flash"):
         return FlashMicroScore(
             ticker=f.ticker,
             name=name,
@@ -589,7 +590,7 @@ def analyze_company(
             f"{data_block}{note}{story}{ref}\n\n"
             "请严格引用上面的真实数字，并在最末尾单独一行给出唯一的【行动指令】。"
         )
-        # Layer 3 / 深度会诊：强制 Pro + 32s RPM 防御
+        # Layer 3 / 深度会诊：强制 Pro Key 硬路由 + 32s RPM 防御
         resolved = (model or config.GEMINI_PRO_MODEL).strip() or config.GEMINI_PRO_MODEL
         _rate_limit_sleep(resolved)  # Pro 32s
         narrative = llm.generate(
@@ -597,6 +598,7 @@ def analyze_company(
             user_content,
             model=resolved,
             skip_throttle=True,
+            api_tier="pro",
         )
 
     return LynchAnalysis(

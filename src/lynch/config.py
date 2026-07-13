@@ -69,8 +69,8 @@ SBI_UNIVERSE_EXCHANGES = [
 SBI_UNIVERSE_LIMIT = _env_int("SBI_UNIVERSE_LIMIT", 10000)
 # 单次最多扫描多少只（防超时）。SBI 全池默认不截断（0=不截断）。
 MAX_UNIVERSE_SCAN = _env_int("MAX_UNIVERSE_SCAN", 0)
-# 第一层漏斗并发线程数。
-SCAN_WORKERS = _env_int("SCAN_WORKERS", 8)
+# 第一层漏斗并发线程数（免费档靠缓存+平滑限流提速，默认 2 避免 FMP 429）。
+SCAN_WORKERS = _env_int("SCAN_WORKERS", 2)
 
 # ── 第一层多通道漏斗阈值（Phase 1 + Phase 2）────────────────────
 # 负债门：长期负债/股东权益；金融股无条件豁免。
@@ -117,6 +117,11 @@ DAILY_PRICE_CHANGE_THRESHOLD = _env_float("DAILY_PRICE_CHANGE_THRESHOLD", 0.04) 
 # 注意：gemini-1.5-* 已关停；免费档用 2.5-flash，终审用 2.5-pro
 GEMINI_FLASH_MODEL = _env_str("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
 GEMINI_PRO_MODEL = _env_str("GEMINI_PRO_MODEL", "gemini-2.5-pro")
+# 双 Key 物理分流：Flash / Pro 各用独立 AI Studio 项目，互不抢免费 RPD。
+# 未设时 fallback 到 GEMINI_API_KEY（单 key 兼容旧 Secrets）。
+GEMINI_API_KEY = _env_str("GEMINI_API_KEY", "")
+GEMINI_FLASH_API_KEY = _env_str("GEMINI_FLASH_API_KEY", "") or GEMINI_API_KEY
+GEMINI_PRO_API_KEY = _env_str("GEMINI_PRO_API_KEY", "") or GEMINI_API_KEY
 # 兼容旧变量：未单独指定时默认 Flash（节食）
 # 注意：周报 L3 / 日报 / 季年报会强制 Pro，不受此默认影响。
 # （实际默认模型解析见 llm.py）

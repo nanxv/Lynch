@@ -25,13 +25,30 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Compute FMP cache week id
+        id: fmp_week
+        run: |
+          mkdir -p data/cache/fmp
+          echo "value=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore FMP static cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cache/fmp
+          key: fmp-cache-${{ runner.os }}-${{ steps.fmp_week.outputs.value }}-${{ github.run_id }}
+          restore-keys: |
+            fmp-cache-${{ runner.os }}-${{ steps.fmp_week.outputs.value }}-
+            fmp-cache-${{ runner.os }}-
+
       - name: Run realtime sniper
         env:
           DATA_PROVIDER: ${{ vars.DATA_PROVIDER }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           FMP_DAILY_QUOTA: "0"
-          FMP_REQUEST_INTERVAL: "0.21"
+          FMP_REQUEST_INTERVAL: ${{ vars.FMP_REQUEST_INTERVAL || '0.4' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_FLASH_API_KEY: ${{ secrets.GEMINI_FLASH_API_KEY }}
+          GEMINI_PRO_API_KEY: ${{ secrets.GEMINI_PRO_API_KEY }}
           GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -39,3 +56,11 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
         run: python scripts/run_realtime_sniper.py
+
+      - name: Save FMP static cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache/fmp
+          key: fmp-cache-${{ runner.os }}-${{ steps.fmp_week.outputs.value }}-${{ github.run_id }}

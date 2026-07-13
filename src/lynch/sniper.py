@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import llm, notify
+from . import config, llm, notify
 from .agent import _system_prompt, build_data_block
 from .data.base import BaseDataProvider, Fundamentals
 from .data.yahoo import YahooFinanceProvider
@@ -88,7 +88,11 @@ def run_realtime_sniper_alert(
     )
     try:
         narrative = llm.generate(
-            _system_prompt(), user_content, max_tokens=SNIPER_DRILL_MAX_TOKENS,
+            _system_prompt(),
+            user_content,
+            max_tokens=SNIPER_DRILL_MAX_TOKENS,
+            model=config.GEMINI_PRO_MODEL,
+            api_tier="pro",
         )
     except LLMError as exc:
         print(f"  ⚠️  {ticker} 盘中 Gemini 失败：{exc}")
@@ -145,7 +149,11 @@ def run_sniper_alert(
     )
     try:
         narrative = llm.generate(
-            _system_prompt(), user_content, max_tokens=SNIPER_DRILL_MAX_TOKENS,
+            _system_prompt(),
+            user_content,
+            max_tokens=SNIPER_DRILL_MAX_TOKENS,
+            model=config.GEMINI_PRO_MODEL,
+            api_tier="pro",
         )
     except LLMError as exc:
         print(f"  ⚠️  {ticker} 狙击 Gemini 失败：{exc}")
