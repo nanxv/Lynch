@@ -40,6 +40,43 @@ FLASH_MICRO_JSON_SCHEMA: dict = {
 _last_call_mono: dict[str, float] = {}
 _throttle_lock = threading.Lock()
 
+# 免费档 / 预付额度熔断：一旦确认 credits depleted / RESOURCE_EXHAUSTED，本进程内停止继续打 Gemini
+_gemini_circuit_lock = threading.Lock()
+_gemini_circuit_open = False
+_gemini_circuit_reason = ""
+
+
+def gemini_circuit_is_open() -> bool:
+    return _gemini_circuit_open
+
+
+def gemini_circuit_reason() -> str:
+    return _gemini_circuit_reason or "Gemini额度耗尽"
+
+
+def trip_gemini_circuit(reason: str) -> None:
+    global _gemini_circuit_open, _gemini_circuit_reason
+    with _gemini_circuit_lock:
+        if not _gemini_circuit_open:
+            _gemini_circuit_open = True
+            _gemini_circuit_reason = (reason or "RESOURCE_EXHAUSTED").replace("\n", " ")[:200]
+            print(
+                f"🛑 Gemini 熔断已开启：{_gemini_circuit_reason}\n"
+                "   本轮剩余 Flash/Pro 将跳过，避免空转。请确认 GEMINI_API_KEY 为 AI Studio【免费档】"
+                "（非预付费项目），见 https://aistudio.google.com/apikey"
+            )
+
+
+def is_gemini_quota_error(exc: BaseException | str) -> bool:
+    text = str(exc)
+    low = text.lower()
+    return (
+        "RESOURCE_EXHAUSTED" in text
+        or "prepayment credits" in low
+        or "credits are depleted" in low
+        or ("429" in text and ("quota" in low or "billing" in low or "resource_exhausted" in low))
+    )
+
 
 def build_task_prompt(mode: str, user_status: str = "watch") -> str:
     """按报告周期 + 影子持仓状态组装动态 Task Prompt。"""
@@ -121,6 +158,9 @@ def generate(
     if not api_key:
         raise LLMError("未设置 GEMINI_API_KEY，无法生成 LLM 叙述（可用 --data-only 仅看硬指标）。")
 
+    if gemini_circuit_is_open():
+        raise LLMError(f"Gemini 已熔断（{gemini_circuit_reason()}），跳过调用。")
+
     try:
         from google import genai
         from google.genai import types
@@ -172,8 +212,12 @@ def generate(
                 config=types.GenerateContentConfig(**soft),
             )
         except Exception as exc:  # noqa: BLE001
+            if is_gemini_quota_error(exc):
+                trip_gemini_circuit(str(exc))
             raise LLMError(f"Gemini 调用失败：{exc}") from exc
     except Exception as exc:  # noqa: BLE001
+        if is_gemini_quota_error(exc):
+            trip_gemini_circuit(str(exc))
         raise LLMError(f"Gemini 调用失败：{exc}") from exc
 
     text = _extract_response_text(resp)

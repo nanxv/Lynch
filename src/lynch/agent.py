@@ -401,6 +401,15 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
             ticker=f.ticker, name=name, company_type=ctype,
             lynch_score=0, one_liner="未配置GEMINI", parse_ok=False,
         )
+    if llm.gemini_circuit_is_open():
+        return FlashMicroScore(
+            ticker=f.ticker,
+            name=name,
+            company_type=ctype,
+            lynch_score=0,
+            one_liner="Gemini熔断跳过",
+            parse_ok=False,
+        )
     model = config.GEMINI_FLASH_MODEL
     micro = build_micro_data_block(f, m)
     user_content = f"请为下列标的打分并只输出 JSON：\n\n{micro}"
@@ -408,12 +417,16 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
     last_api_exc: Exception | None = None
     last_raw = ""
     for _attempt in range(2):
+        if llm.gemini_circuit_is_open():
+            break
         _rate_limit_sleep(model)
         try:
             text = _flash_generate_once(model, user_content)
         except Exception as exc:  # noqa: BLE001
             last_api_exc = exc
             last_raw = str(exc)[:300]
+            if llm.is_gemini_quota_error(exc):
+                break
             continue
         last_raw = text
         scored = parse_flash_micro_json(
@@ -427,7 +440,7 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
         hint = str(last_api_exc).replace("\n", " ")
         if "NOT_FOUND" in hint or "not found" in hint.lower():
             short = "模型不可用/已下线"
-        elif "429" in hint or "ResourceExhausted" in hint or "quota" in hint.lower():
+        elif llm.is_gemini_quota_error(hint) or "429" in hint or "ResourceExhausted" in hint:
             short = "配额耗尽429"
         elif "空内容" in hint:
             short = "空响应"
@@ -440,6 +453,15 @@ def flash_micro_score(analysis: LynchAnalysis) -> FlashMicroScore:
             lynch_score=0,
             one_liner=f"Flash失败:{short}"[:30],
             raw_response=last_raw[:300],
+            parse_ok=False,
+        )
+    if llm.gemini_circuit_is_open():
+        return FlashMicroScore(
+            ticker=f.ticker,
+            name=name,
+            company_type=ctype,
+            lynch_score=0,
+            one_liner="Gemini熔断跳过",
             parse_ok=False,
         )
     return FlashMicroScore(

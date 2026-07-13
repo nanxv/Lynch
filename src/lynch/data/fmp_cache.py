@@ -36,10 +36,23 @@ def _load_json(path: Path) -> dict[str, Any] | list[Any] | None:
     if not path.exists():
         return None
     try:
+        if path.stat().st_size == 0:
+            return None
+    except OSError:
+        return None
+    try:
         with path.open(encoding="utf-8") as f:
-            return json.load(f)
+            text = f.read().strip()
+        if not text:
+            return None
+        return json.loads(text)
     except Exception as exc:  # noqa: BLE001
-        log.warning("读取缓存失败 %s: %s", path, exc)
+        # 并发写空窗常见；空文件/半写不刷 warning 噪声
+        msg = str(exc)
+        if "Expecting value" in msg or "char 0" in msg:
+            log.debug("读取缓存空窗 %s: %s", path, exc)
+        else:
+            log.warning("读取缓存失败 %s: %s", path, exc)
         return None
 
 

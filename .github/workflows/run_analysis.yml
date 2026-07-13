@@ -75,6 +75,8 @@ jobs:
         env:
           # 数据源 / 漏斗 / 成本熔断
           DATA_PROVIDER: ${{ vars.DATA_PROVIDER }}
+          # 注意：若仓库 Variables 已设 UNIVERSE_SOURCES / SCAN_WORKERS，会覆盖下方 fallback。
+          # 周报美股建议 Variables：UNIVERSE_SOURCES=us_sbi，MAX_UNIVERSE_SCAN=0，SCAN_WORKERS=2
           UNIVERSE_SOURCES: ${{ vars.UNIVERSE_SOURCES || 'us_sbi' }}
           MARKET: ${{ vars.MARKET || 'US' }}
           US_MARKET_SAMPLE_SIZE: ${{ vars.US_MARKET_SAMPLE_SIZE }}
@@ -82,12 +84,12 @@ jobs:
           MAX_AI_ANALYSIS_COUNT: ${{ vars.MAX_AI_ANALYSIS_COUNT || '30' }}
           LAYER3_FLASH_TOP_N: ${{ vars.LAYER3_FLASH_TOP_N || '10' }}
           AI_SORT_KEY: ${{ vars.AI_SORT_KEY }}
-          SCAN_WORKERS: ${{ vars.SCAN_WORKERS || '8' }}
+          SCAN_WORKERS: ${{ vars.SCAN_WORKERS || '2' }}
           SBI_UNIVERSE_MIN_MARKET_CAP: ${{ vars.SBI_UNIVERSE_MIN_MARKET_CAP || '300000000' }}
           SBI_UNIVERSE_LIMIT: ${{ vars.SBI_UNIVERSE_LIMIT || '10000' }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           FMP_DAILY_QUOTA: "0"
-          FMP_REQUEST_INTERVAL: "0.21"
+          FMP_REQUEST_INTERVAL: ${{ vars.FMP_REQUEST_INTERVAL || '0.4' }}
           # 三层漏斗：Flash 节食 + Pro 终审（免费档 RPM 已在代码内节流）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_FLASH_MODEL: ${{ secrets.GEMINI_FLASH_MODEL || 'gemini-2.5-flash' }}

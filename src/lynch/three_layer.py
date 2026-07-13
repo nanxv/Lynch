@@ -53,6 +53,7 @@ def run_layer2_and_select_layer3(
     counts = {"analyzed": 0, "flash": 0, "pro": 0, "data_only": 0, "ai": 0}
 
     ai_ok = llm.is_configured()
+    flash_skipped_after_circuit = 0
 
     for q in working:
         name, note, user_status = watch.get(q.ticker, (q.name or q.ticker, "", "watch"))
@@ -85,6 +86,17 @@ def run_layer2_and_select_layer3(
                     parse_ok=False,
                 ))
                 continue
+            if llm.gemini_circuit_is_open():
+                flash_skipped_after_circuit += 1
+                flash_scores.append(FlashMicroScore(
+                    ticker=a.ticker,
+                    name=a.fundamentals.name or name,
+                    company_type=a.metrics.company_type,
+                    lynch_score=0,
+                    one_liner="Gemini熔断跳过",
+                    parse_ok=False,
+                ))
+                continue
             score = flash_micro_score(a)
             flash_scores.append(score)
             counts["flash"] += 1
@@ -97,6 +109,12 @@ def run_layer2_and_select_layer3(
             print(f"  ❌ L2 {q.ticker}: {exc}")
         except Exception as exc:  # noqa: BLE001
             print(f"  ❌ L2 {q.ticker} 意外：{exc}")
+
+    if flash_skipped_after_circuit:
+        print(
+            f"🛑 L2 因 Gemini 熔断跳过剩余 {flash_skipped_after_circuit} 只 Flash "
+            f"（{llm.gemini_circuit_reason()}）"
+        )
 
     flash_top_n = compute_layer3_flash_top_n(len(held_tickers))
     layer3_list = select_layer3_tickers(
@@ -145,10 +163,23 @@ def run_layer3_pro(
         print("⚠️  L3 Pro 队列为空（不应发生：held 应始终入队）。")
         return out
 
+    if llm.gemini_circuit_is_open():
+        print(
+            f"🛑 Gemini 已熔断（{llm.gemini_circuit_reason()}），跳过全部 L3 Pro 终审。"
+        )
+        return out
+
     pro_model = config.GEMINI_PRO_MODEL
     print(f"🎩 L3 Pro 队列 {len(layer3_queue)} 只 → `{pro_model}`\n")
 
-    for raw_ticker in layer3_queue:
+    for idx, raw_ticker in enumerate(layer3_queue):
+        if llm.gemini_circuit_is_open():
+            remaining = len(layer3_queue) - idx
+            print(
+                f"🛑 Gemini 熔断，跳过剩余 {remaining} 只 L3 Pro "
+                f"（{llm.gemini_circuit_reason()}）"
+            )
+            break
         ticker = _ticker_key(raw_ticker)
         name, note, user_status = (ticker, "", "held")
         for k, v in watch.items():
