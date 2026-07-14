@@ -65,44 +65,59 @@ def resolve_api_tier(model: str | None = None, *, api_tier: ApiTier | None = Non
 
 
 def resolve_api_key(model: str | None = None, *, api_tier: ApiTier | None = None) -> str:
-    """按档位取 Key；专用 Key 未设时 fallback 到 GEMINI_API_KEY。"""
+    """按档位取 Key；专用 Key 未设时 fallback 到 legacy，再跨档互备。"""
     return resolve_api_key_with_source(model, api_tier=api_tier)[0]
+
+
+def _collect_named_keys() -> dict[str, str]:
+    """收集当前环境中所有可用 Gemini Key（去空）。"""
+    legacy = _env_key("GEMINI_API_KEY") or (config.GEMINI_API_KEY or "").strip()
+    flash = _env_key("GEMINI_FLASH_API_KEY") or (config.GEMINI_FLASH_API_KEY or "").strip()
+    pro = _env_key("GEMINI_PRO_API_KEY") or (config.GEMINI_PRO_API_KEY or "").strip()
+    out: dict[str, str] = {}
+    if flash:
+        out["GEMINI_FLASH_API_KEY"] = flash
+    if pro:
+        out["GEMINI_PRO_API_KEY"] = pro
+    if legacy:
+        out["GEMINI_API_KEY"] = legacy
+    return out
+
+
+def iter_api_key_candidates(
+    model: str | None = None, *, api_tier: ApiTier | None = None,
+) -> list[tuple[str, str]]:
+    """按档位优先序返回候选 (key, 来源名)；同内容去重。
+
+    Pro: PRO → legacy → FLASH（日报/L3 可与周报共用唯一可用 Key）
+    Flash: FLASH → legacy → PRO
+    """
+    named = _collect_named_keys()
+    tier = resolve_api_tier(model, api_tier=api_tier)
+    order = (
+        ("GEMINI_PRO_API_KEY", "GEMINI_API_KEY", "GEMINI_FLASH_API_KEY")
+        if tier == "pro"
+        else ("GEMINI_FLASH_API_KEY", "GEMINI_API_KEY", "GEMINI_PRO_API_KEY")
+    )
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for src in order:
+        key = named.get(src) or ""
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append((key, src))
+    return out
 
 
 def resolve_api_key_with_source(
     model: str | None = None, *, api_tier: ApiTier | None = None,
 ) -> tuple[str, str]:
-    """返回 (api_key, 来源环境变量名)。"""
-    legacy = _env_key("GEMINI_API_KEY")
-    if not legacy:
-        legacy = (config.GEMINI_API_KEY or "").strip()
-
-    flash_env = _env_key("GEMINI_FLASH_API_KEY")
-    pro_env = _env_key("GEMINI_PRO_API_KEY")
-    flash_cfg = (config.GEMINI_FLASH_API_KEY or "").strip()
-    pro_cfg = (config.GEMINI_PRO_API_KEY or "").strip()
-
-    tier = resolve_api_tier(model, api_tier=api_tier)
-    if tier == "pro":
-        if pro_env:
-            return pro_env, "GEMINI_PRO_API_KEY"
-        if pro_cfg and pro_cfg != legacy:
-            return pro_cfg, "GEMINI_PRO_API_KEY"
-        if legacy:
-            return legacy, "GEMINI_API_KEY"
-        if pro_cfg:
-            return pro_cfg, "GEMINI_PRO_API_KEY"
+    """返回首选 (api_key, 来源环境变量名)。"""
+    cands = iter_api_key_candidates(model, api_tier=api_tier)
+    if not cands:
         return "", "(missing)"
-
-    if flash_env:
-        return flash_env, "GEMINI_FLASH_API_KEY"
-    if flash_cfg and flash_cfg != legacy:
-        return flash_cfg, "GEMINI_FLASH_API_KEY"
-    if legacy:
-        return legacy, "GEMINI_API_KEY"
-    if flash_cfg:
-        return flash_cfg, "GEMINI_FLASH_API_KEY"
-    return "", "(missing)"
+    return cands[0]
 
 
 def api_key_source(model: str | None = None, *, api_tier: ApiTier | None = None) -> str:
@@ -118,12 +133,15 @@ def _key_fingerprint(key: str) -> str:
 
 def log_gemini_key_status() -> None:
     """启动时打印双 Key 配置概况（指纹，不泄露全文）。"""
+    named = _collect_named_keys()
+    if not named:
+        print("⚠️  Gemini：未配置任何 API Key")
+        return
+    for src, key in named.items():
+        print(f"🔑 {src} → {_key_fingerprint(key)}")
     for tier in ("flash", "pro"):
         key, src = resolve_api_key_with_source(api_tier=tier)  # type: ignore[arg-type]
-        if key:
-            print(f"🔑 Gemini {tier}: {src} → {_key_fingerprint(key)}")
-        else:
-            print(f"⚠️  Gemini {tier}: 未配置")
+        print(f"   └ {tier} 首选 → {src}")
 
 
 def is_gemini_auth_error(exc: BaseException | str) -> bool:
@@ -268,8 +286,8 @@ def generate(
     api_tier='flash'|'pro'：硬路由到对应 API Key（未设则 fallback GEMINI_API_KEY）。
     """
     tier = resolve_api_tier(model, api_tier=api_tier)
-    api_key, key_src = resolve_api_key_with_source(model, api_tier=tier)
-    if not api_key:
+    candidates = iter_api_key_candidates(model, api_tier=tier)
+    if not candidates:
         raise LLMError(
             "未设置 GEMINI_FLASH_API_KEY / GEMINI_PRO_API_KEY / GEMINI_API_KEY，"
             "无法生成 LLM 叙述（可用 --data-only 仅看硬指标）。"
@@ -306,48 +324,66 @@ def generate(
         except Exception:  # noqa: BLE001
             pass
 
-    def _raise_api_error(exc: BaseException) -> None:
-        if is_gemini_quota_error(exc) or is_gemini_auth_error(exc):
-            trip_gemini_circuit(str(exc), api_tier=tier)
-        hint = f"（密钥来源 {key_src} · {_key_fingerprint(api_key)}）"
-        raise LLMError(f"Gemini 调用失败{hint}：{exc}") from exc
+    last_exc: BaseException | None = None
+    last_src = candidates[0][1]
+    last_fp = _key_fingerprint(candidates[0][0])
 
-    client = genai.Client(api_key=api_key)
-    try:
-        resp = client.models.generate_content(
-            model=resolved_model,
-            contents=user_content,
-            config=types.GenerateContentConfig(**cfg_kwargs),
-        )
-    except TypeError:
-        soft = {
-            "system_instruction": system_prompt,
-            "max_output_tokens": max_tokens,
-        }
-        if temperature is not None:
-            soft["temperature"] = float(temperature)
-        if response_mime_type:
-            soft["response_mime_type"] = response_mime_type
+    for idx, (api_key, key_src) in enumerate(candidates):
+        last_src, last_fp = key_src, _key_fingerprint(api_key)
+        client = genai.Client(api_key=api_key)
         try:
-            resp = client.models.generate_content(
-                model=resolved_model,
-                contents=user_content,
-                config=types.GenerateContentConfig(**soft),
-            )
+            try:
+                resp = client.models.generate_content(
+                    model=resolved_model,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(**cfg_kwargs),
+                )
+            except TypeError:
+                soft = {
+                    "system_instruction": system_prompt,
+                    "max_output_tokens": max_tokens,
+                }
+                if temperature is not None:
+                    soft["temperature"] = float(temperature)
+                if response_mime_type:
+                    soft["response_mime_type"] = response_mime_type
+                resp = client.models.generate_content(
+                    model=resolved_model,
+                    contents=user_content,
+                    config=types.GenerateContentConfig(**soft),
+                )
         except Exception as exc:  # noqa: BLE001
-            _raise_api_error(exc)
-    except Exception as exc:  # noqa: BLE001
-        _raise_api_error(exc)
+            last_exc = exc
+            if is_gemini_auth_error(exc) and idx + 1 < len(candidates):
+                nxt = candidates[idx + 1][1]
+                print(
+                    f"⚠️  Gemini {tier} Key 无效（{key_src} · {_key_fingerprint(api_key)}），"
+                    f"改用 {nxt} 重试…"
+                )
+                continue
+            if is_gemini_quota_error(exc) or is_gemini_auth_error(exc):
+                trip_gemini_circuit(str(exc), api_tier=tier)
+            raise LLMError(
+                f"Gemini 调用失败（密钥来源 {key_src} · {_key_fingerprint(api_key)}）：{exc}"
+            ) from exc
 
-    text = _extract_response_text(resp)
-    if not text:
-        finish = ""
-        try:
-            cands = getattr(resp, "candidates", None) or []
-            if cands:
-                finish = str(getattr(cands[0], "finish_reason", "") or "")
-        except Exception:  # noqa: BLE001
+        text = _extract_response_text(resp)
+        if not text:
             finish = ""
-        hint = f"（finish={finish}）" if finish else ""
-        raise LLMError(f"Gemini 返回空内容{hint}（可能触发安全过滤或输出上限）。")
-    return text
+            try:
+                cands = getattr(resp, "candidates", None) or []
+                if cands:
+                    finish = str(getattr(cands[0], "finish_reason", "") or "")
+            except Exception:  # noqa: BLE001
+                finish = ""
+            hint = f"（finish={finish}）" if finish else ""
+            raise LLMError(f"Gemini 返回空内容{hint}（可能触发安全过滤或输出上限）。")
+        if idx > 0:
+            print(f"✅ Gemini {tier} 已改用 {key_src} 成功")
+        return text
+
+    assert last_exc is not None
+    trip_gemini_circuit(str(last_exc), api_tier=tier)
+    raise LLMError(
+        f"Gemini 调用失败（密钥来源 {last_src} · {last_fp}）：{last_exc}"
+    ) from last_exc

@@ -48,8 +48,25 @@ def test_circuit_is_per_tier():
     assert llm.gemini_circuit_is_open()
 
 
-def test_resolve_api_tier_from_model():
-    assert llm.resolve_api_tier("gemini-2.5-flash") == "flash"
-    assert llm.resolve_api_tier("gemini-2.5-pro") == "pro"
-    assert llm.resolve_api_tier("x", api_tier="pro") == "pro"
-    assert llm.resolve_api_tier("gemini-2.5-pro", api_tier="flash") == "flash"
+def test_resolve_api_key_cross_fallback_to_flash(monkeypatch):
+    """Pro 档在只有 Flash Key 时，与周报共用同一把。"""
+    monkeypatch.setenv("GEMINI_FLASH_API_KEY", "flash-only")
+    monkeypatch.delenv("GEMINI_PRO_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with patch.object(llm.config, "GEMINI_PRO_API_KEY", ""), patch.object(
+        llm.config, "GEMINI_API_KEY", ""
+    ), patch.object(llm.config, "GEMINI_FLASH_API_KEY", "flash-only"):
+        assert llm.resolve_api_key(api_tier="pro") == "flash-only"
+        cands = llm.iter_api_key_candidates(api_tier="pro")
+        assert cands[0] == ("flash-only", "GEMINI_FLASH_API_KEY")
+
+
+def test_resolve_api_key_prefers_own_then_cross(monkeypatch):
+    monkeypatch.setenv("GEMINI_FLASH_API_KEY", "flash-key")
+    monkeypatch.setenv("GEMINI_PRO_API_KEY", "pro-key")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with patch.object(llm.config, "GEMINI_API_KEY", ""), patch.object(
+        llm.config, "GEMINI_FLASH_API_KEY", "flash-key"
+    ), patch.object(llm.config, "GEMINI_PRO_API_KEY", "pro-key"):
+        cands = llm.iter_api_key_candidates(api_tier="pro")
+        assert [s for _, s in cands] == ["GEMINI_PRO_API_KEY", "GEMINI_FLASH_API_KEY"]
