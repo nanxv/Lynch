@@ -66,12 +66,75 @@ def resolve_api_tier(model: str | None = None, *, api_tier: ApiTier | None = Non
 
 def resolve_api_key(model: str | None = None, *, api_tier: ApiTier | None = None) -> str:
     """按档位取 Key；专用 Key 未设时 fallback 到 GEMINI_API_KEY。"""
-    legacy = _env_key("GEMINI_API_KEY") or (config.GEMINI_API_KEY or "").strip()
-    flash = _env_key("GEMINI_FLASH_API_KEY") or (config.GEMINI_FLASH_API_KEY or "").strip() or legacy
-    pro = _env_key("GEMINI_PRO_API_KEY") or (config.GEMINI_PRO_API_KEY or "").strip() or legacy
-    tier = resolve_api_tier(model, api_tier=api_tier)
-    return pro if tier == "pro" else flash
+    return resolve_api_key_with_source(model, api_tier=api_tier)[0]
 
+
+def resolve_api_key_with_source(
+    model: str | None = None, *, api_tier: ApiTier | None = None,
+) -> tuple[str, str]:
+    """返回 (api_key, 来源环境变量名)。"""
+    legacy = _env_key("GEMINI_API_KEY")
+    if not legacy:
+        legacy = (config.GEMINI_API_KEY or "").strip()
+
+    flash_env = _env_key("GEMINI_FLASH_API_KEY")
+    pro_env = _env_key("GEMINI_PRO_API_KEY")
+    flash_cfg = (config.GEMINI_FLASH_API_KEY or "").strip()
+    pro_cfg = (config.GEMINI_PRO_API_KEY or "").strip()
+
+    tier = resolve_api_tier(model, api_tier=api_tier)
+    if tier == "pro":
+        if pro_env:
+            return pro_env, "GEMINI_PRO_API_KEY"
+        if pro_cfg and pro_cfg != legacy:
+            return pro_cfg, "GEMINI_PRO_API_KEY"
+        if legacy:
+            return legacy, "GEMINI_API_KEY"
+        if pro_cfg:
+            return pro_cfg, "GEMINI_PRO_API_KEY"
+        return "", "(missing)"
+
+    if flash_env:
+        return flash_env, "GEMINI_FLASH_API_KEY"
+    if flash_cfg and flash_cfg != legacy:
+        return flash_cfg, "GEMINI_FLASH_API_KEY"
+    if legacy:
+        return legacy, "GEMINI_API_KEY"
+    if flash_cfg:
+        return flash_cfg, "GEMINI_FLASH_API_KEY"
+    return "", "(missing)"
+
+
+def api_key_source(model: str | None = None, *, api_tier: ApiTier | None = None) -> str:
+    return resolve_api_key_with_source(model, api_tier=api_tier)[1]
+
+
+def _key_fingerprint(key: str) -> str:
+    k = (key or "").strip()
+    if len(k) < 8:
+        return f"len={len(k)}"
+    return f"{k[:4]}…{k[-4:]} (len={len(k)})"
+
+
+def log_gemini_key_status() -> None:
+    """启动时打印双 Key 配置概况（指纹，不泄露全文）。"""
+    for tier in ("flash", "pro"):
+        key, src = resolve_api_key_with_source(api_tier=tier)  # type: ignore[arg-type]
+        if key:
+            print(f"🔑 Gemini {tier}: {src} → {_key_fingerprint(key)}")
+        else:
+            print(f"⚠️  Gemini {tier}: 未配置")
+
+
+def is_gemini_auth_error(exc: BaseException | str) -> bool:
+    text = str(exc)
+    low = text.lower()
+    return (
+        "API_KEY_INVALID" in text
+        or "api key not valid" in low
+        or "PERMISSION_DENIED" in text
+        or "API key expired" in low
+    )
 
 def gemini_circuit_is_open(api_tier: ApiTier | None = None) -> bool:
     if api_tier is None:
@@ -205,7 +268,7 @@ def generate(
     api_tier='flash'|'pro'：硬路由到对应 API Key（未设则 fallback GEMINI_API_KEY）。
     """
     tier = resolve_api_tier(model, api_tier=api_tier)
-    api_key = resolve_api_key(model, api_tier=tier)
+    api_key, key_src = resolve_api_key_with_source(model, api_tier=tier)
     if not api_key:
         raise LLMError(
             "未设置 GEMINI_FLASH_API_KEY / GEMINI_PRO_API_KEY / GEMINI_API_KEY，"
@@ -243,6 +306,12 @@ def generate(
         except Exception:  # noqa: BLE001
             pass
 
+    def _raise_api_error(exc: BaseException) -> None:
+        if is_gemini_quota_error(exc) or is_gemini_auth_error(exc):
+            trip_gemini_circuit(str(exc), api_tier=tier)
+        hint = f"（密钥来源 {key_src} · {_key_fingerprint(api_key)}）"
+        raise LLMError(f"Gemini 调用失败{hint}：{exc}") from exc
+
     client = genai.Client(api_key=api_key)
     try:
         resp = client.models.generate_content(
@@ -266,13 +335,9 @@ def generate(
                 config=types.GenerateContentConfig(**soft),
             )
         except Exception as exc:  # noqa: BLE001
-            if is_gemini_quota_error(exc):
-                trip_gemini_circuit(str(exc), api_tier=tier)
-            raise LLMError(f"Gemini 调用失败：{exc}") from exc
+            _raise_api_error(exc)
     except Exception as exc:  # noqa: BLE001
-        if is_gemini_quota_error(exc):
-            trip_gemini_circuit(str(exc), api_tier=tier)
-        raise LLMError(f"Gemini 调用失败：{exc}") from exc
+        _raise_api_error(exc)
 
     text = _extract_response_text(resp)
     if not text:

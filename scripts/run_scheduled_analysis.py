@@ -694,6 +694,8 @@ def main() -> int:
     args.mode = normalize_mode(args.mode)
     _apply_temporal_routing(args)
 
+    llm.log_gemini_key_status()
+
     if args.mode == "daily" and not args.force:
         ok, info = should_run_daily_report()
         if not ok:
