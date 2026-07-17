@@ -87,12 +87,13 @@ def run_realtime_sniper_alert(
         "请严格引用上面的真实数字，并在最末尾单独一行给出唯一的【行动指令】。"
     )
     try:
+        deep_model, deep_tier = llm.resolve_deep_model_and_tier(config.GEMINI_PRO_MODEL)
         narrative = llm.generate(
             _system_prompt(),
             user_content,
             max_tokens=SNIPER_DRILL_MAX_TOKENS,
-            model=config.GEMINI_PRO_MODEL,
-            api_tier="pro",
+            model=deep_model,
+            api_tier=deep_tier,
         )
     except LLMError as exc:
         print(f"  ⚠️  {ticker} 盘中 Gemini 失败：{exc}")
@@ -148,12 +149,13 @@ def run_sniper_alert(
         "请严格引用上面的真实数字，并在最末尾单独一行给出唯一的【行动指令】。"
     )
     try:
+        deep_model, deep_tier = llm.resolve_deep_model_and_tier(config.GEMINI_PRO_MODEL)
         narrative = llm.generate(
             _system_prompt(),
             user_content,
             max_tokens=SNIPER_DRILL_MAX_TOKENS,
-            model=config.GEMINI_PRO_MODEL,
-            api_tier="pro",
+            model=deep_model,
+            api_tier=deep_tier,
         )
     except LLMError as exc:
         print(f"  ⚠️  {ticker} 狙击 Gemini 失败：{exc}")

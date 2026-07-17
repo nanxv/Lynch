@@ -154,6 +154,47 @@ def is_gemini_auth_error(exc: BaseException | str) -> bool:
         or "API key expired" in low
     )
 
+
+# Pro 深度会诊在本进程已确认不可用（免费档 limit:0 / 配额耗尽）→ 改用 Flash
+_pro_deep_unavailable = False
+_pro_deep_lock = threading.Lock()
+
+
+def mark_pro_deep_unavailable(reason: str = "") -> None:
+    """标记 Pro 深度模型不可用，后续会诊直接走 Flash。"""
+    global _pro_deep_unavailable
+    with _pro_deep_lock:
+        if _pro_deep_unavailable:
+            return
+        _pro_deep_unavailable = True
+        trip_gemini_circuit(reason or "Pro 免费配额不可用", api_tier="pro")
+        print(
+            "ℹ️  深度会诊降级：`gemini` Pro 免费档不可用 → 改用 "
+            f"`{FLASH_MODEL or config.GEMINI_FLASH_MODEL}` + Flash Key"
+        )
+
+
+def pro_deep_unavailable() -> bool:
+    return _pro_deep_unavailable or bool(config.GEMINI_FORCE_FLASH_DEEP) or gemini_circuit_is_open(
+        "pro"
+    )
+
+
+def resolve_deep_model_and_tier(
+    preferred_model: str | None = None,
+) -> tuple[str, ApiTier]:
+    """日报 / L3 / 狙击深度会诊所用模型与 Key 档位。
+
+    优先 Pro；若免费档 Pro 配额为 0 或已熔断，自动改 Flash（不花钱仍能出报告）。
+    """
+    if pro_deep_unavailable():
+        flash = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-2.5-flash"
+        return flash, "flash"
+    pro = (preferred_model or config.GEMINI_PRO_MODEL or PRO_MODEL).strip() or "gemini-2.5-pro"
+    if is_pro_model(pro):
+        return pro, "pro"
+    return pro, "flash"
+
 def gemini_circuit_is_open(api_tier: ApiTier | None = None) -> bool:
     if api_tier is None:
         return any(_gemini_circuit_open.values())
@@ -277,6 +318,7 @@ def generate(
     thinking_budget: int | None = None,
     temperature: float | None = None,
     api_tier: ApiTier | None = None,
+    _allow_flash_deep_fallback: bool = True,
 ) -> str:
     """调用 Gemini 生成内容（默认按模型节流；agent 可先 throttle 再 skip）。
 
@@ -284,8 +326,31 @@ def generate(
     从 API 层禁止 Markdown/<think>，节省免费档额度。
 
     api_tier='flash'|'pro'：硬路由到对应 API Key（未设则 fallback GEMINI_API_KEY）。
+    Pro 免费配额耗尽时自动降级 Flash 模型+Key（日报/L3 可继续）。
     """
-    tier = resolve_api_tier(model, api_tier=api_tier)
+    requested_tier = resolve_api_tier(model, api_tier=api_tier)
+    # 深度 Pro 已确认不可用：直接改走 Flash，避免每只票先撞一次 429
+    if (
+        requested_tier == "pro"
+        and _allow_flash_deep_fallback
+        and pro_deep_unavailable()
+    ):
+        flash_model = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-2.5-flash"
+        return generate(
+            system_prompt,
+            user_content,
+            model=flash_model,
+            max_tokens=max_tokens,
+            skip_throttle=skip_throttle,
+            response_mime_type=response_mime_type,
+            response_json_schema=response_json_schema,
+            thinking_budget=thinking_budget,
+            temperature=temperature,
+            api_tier="flash",
+            _allow_flash_deep_fallback=False,
+        )
+
+    tier = requested_tier
     candidates = iter_api_key_candidates(model, api_tier=tier)
     if not candidates:
         raise LLMError(
@@ -361,6 +426,32 @@ def generate(
                     f"改用 {nxt} 重试…"
                 )
                 continue
+            # Pro 配额耗尽（含 free tier limit:0）→ 降级 Flash，不直接整轮报废
+            if (
+                tier == "pro"
+                and _allow_flash_deep_fallback
+                and is_gemini_quota_error(exc)
+            ):
+                mark_pro_deep_unavailable(str(exc))
+                flash_model = (
+                    FLASH_MODEL or config.GEMINI_FLASH_MODEL
+                ).strip() or "gemini-2.5-flash"
+                print(
+                    f"⚠️  Pro 配额不可用（{key_src}），改用 `{flash_model}` 重试…"
+                )
+                return generate(
+                    system_prompt,
+                    user_content,
+                    model=flash_model,
+                    max_tokens=max_tokens,
+                    skip_throttle=skip_throttle,
+                    response_mime_type=response_mime_type,
+                    response_json_schema=response_json_schema,
+                    thinking_budget=thinking_budget,
+                    temperature=temperature,
+                    api_tier="flash",
+                    _allow_flash_deep_fallback=False,
+                )
             if is_gemini_quota_error(exc) or is_gemini_auth_error(exc):
                 trip_gemini_circuit(str(exc), api_tier=tier)
             raise LLMError(
@@ -383,6 +474,27 @@ def generate(
         return text
 
     assert last_exc is not None
+    if (
+        tier == "pro"
+        and _allow_flash_deep_fallback
+        and is_gemini_quota_error(last_exc)
+    ):
+        mark_pro_deep_unavailable(str(last_exc))
+        flash_model = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-2.5-flash"
+        print(f"⚠️  Pro 配额不可用，改用 `{flash_model}` 重试…")
+        return generate(
+            system_prompt,
+            user_content,
+            model=flash_model,
+            max_tokens=max_tokens,
+            skip_throttle=skip_throttle,
+            response_mime_type=response_mime_type,
+            response_json_schema=response_json_schema,
+            thinking_budget=thinking_budget,
+            temperature=temperature,
+            api_tier="flash",
+            _allow_flash_deep_fallback=False,
+        )
     trip_gemini_circuit(str(last_exc), api_tier=tier)
     raise LLMError(
         f"Gemini 调用失败（密钥来源 {last_src} · {last_fp}）：{last_exc}"

@@ -128,6 +128,8 @@ GEMINI_PRO_API_KEY = _env_str("GEMINI_PRO_API_KEY", "") or GEMINI_API_KEY
 # 免费档 RPM 防御：Flash≈15RPM → 4.5s；Pro≈2RPM → 32s
 GEMINI_FLASH_INTERVAL_SEC = _env_float("GEMINI_FLASH_INTERVAL_SEC", 4.5)
 GEMINI_PRO_INTERVAL_SEC = _env_float("GEMINI_PRO_INTERVAL_SEC", 32.0)
+# 深度会诊（日报/L3）：Pro 免费配额为 0 时自动降级 Flash。设 1 则直接用 Flash，跳过 Pro。
+GEMINI_FORCE_FLASH_DEEP = _env_int("GEMINI_FORCE_FLASH_DEEP", 0) == 1
 # Layer 3：held 全员 + Flash 评分 Top N（海选进阶名额 = max(0, TOTAL - held - RESERVED)）
 LAYER3_PRO_TOTAL_BUDGET = _env_int("LAYER3_PRO_TOTAL_BUDGET", 50)
 LAYER3_PRO_RESERVED = _env_int("LAYER3_PRO_RESERVED", 5)

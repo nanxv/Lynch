@@ -590,15 +590,15 @@ def analyze_company(
             f"{data_block}{note}{story}{ref}\n\n"
             "请严格引用上面的真实数字，并在最末尾单独一行给出唯一的【行动指令】。"
         )
-        # Layer 3 / 深度会诊：强制 Pro Key 硬路由 + 32s RPM 防御
-        resolved = (model or config.GEMINI_PRO_MODEL).strip() or config.GEMINI_PRO_MODEL
-        _rate_limit_sleep(resolved)  # Pro 32s
+        # Layer 3 / 深度会诊：优先 Pro；免费档 Pro 配额为 0 时自动降级 Flash
+        resolved, deep_tier = llm.resolve_deep_model_and_tier(model)
+        _rate_limit_sleep(resolved)
         narrative = llm.generate(
             _system_prompt(layer3_openbb=use_openbb),
             user_content,
             model=resolved,
             skip_throttle=True,
-            api_tier="pro",
+            api_tier=deep_tier,
         )
 
     return LynchAnalysis(

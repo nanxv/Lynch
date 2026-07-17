@@ -312,6 +312,7 @@ def _run_daily_sniper(args, provider) -> int:
 
     for q, note, st, reasons, chg in triggered:
         try:
+            deep_model, _deep_tier = llm.resolve_deep_model_and_tier(config.GEMINI_PRO_MODEL)
             a = analyze_company(
                 q.ticker,
                 user_note=note,
@@ -320,7 +321,7 @@ def _run_daily_sniper(args, provider) -> int:
                 user_status=st,
                 report_mode="daily",
                 day_change=chg,
-                model=config.GEMINI_PRO_MODEL,
+                model=deep_model,
             )
             counts["analyzed"] += 1
             counts["ai" if ai_available else "data_only"] += 1

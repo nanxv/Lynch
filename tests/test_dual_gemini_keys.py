@@ -15,9 +15,18 @@ def _reset_circuits():
     llm._gemini_circuit_open["pro"] = False
     llm._gemini_circuit_reason["flash"] = ""
     llm._gemini_circuit_reason["pro"] = ""
+    llm._pro_deep_unavailable = False
     yield
     llm._gemini_circuit_open["flash"] = False
     llm._gemini_circuit_open["pro"] = False
+    llm._pro_deep_unavailable = False
+
+
+def test_resolve_deep_falls_back_when_pro_unavailable():
+    llm.mark_pro_deep_unavailable("limit 0")
+    model, tier = llm.resolve_deep_model_and_tier("gemini-2.5-pro")
+    assert tier == "flash"
+    assert "flash" in model.lower()
 
 
 def test_resolve_api_key_routes_flash_and_pro(monkeypatch):
