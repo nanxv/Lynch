@@ -21,9 +21,16 @@ class LLMError(Exception):
 # 官方稳定版（三层漏斗硬编码默认；可用环境变量覆盖）
 FLASH_MODEL = (os.getenv("GEMINI_FLASH_MODEL") or config.GEMINI_FLASH_MODEL).strip()
 PRO_MODEL = (os.getenv("GEMINI_PRO_MODEL") or config.GEMINI_PRO_MODEL).strip()
-_FALLBACK_MODEL = FLASH_MODEL or "gemini-2.5-flash"
+_FALLBACK_MODEL = FLASH_MODEL or "gemini-3.5-flash"
 # 兼容旧 GEMINI_MODEL：未设则默认 Flash（节食）
 DEFAULT_MODEL = (os.getenv("GEMINI_MODEL") or _FALLBACK_MODEL).strip() or _FALLBACK_MODEL
+# 新免费项目不可用 2.5-* 时的换代候选（按优先序）
+FLASH_MODEL_FALLBACKS = (
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-2.0-flash",
+)
 SNIPER_DRILL_MAX_TOKENS = 2048
 # Layer 2 Flash：原生 JSON Mode 下纯短 JSON，保持低上限以节省免费档额度
 FLASH_MICRO_MAX_TOKENS = 200
@@ -155,6 +162,37 @@ def is_gemini_auth_error(exc: BaseException | str) -> bool:
     )
 
 
+def is_gemini_model_unavailable(exc: BaseException | str) -> bool:
+    text = str(exc)
+    low = text.lower()
+    return (
+        "NOT_FOUND" in text
+        or "no longer available" in low
+        or "is not found" in low
+        or ("404" in text and "model" in low)
+    )
+
+
+def next_flash_model(current: str) -> str | None:
+    """当前 Flash 模型对新用户不可用时，返回下一候选。"""
+    cur = (current or "").strip()
+    chain = [FLASH_MODEL] + [m for m in FLASH_MODEL_FALLBACKS if m != FLASH_MODEL]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for m in chain:
+        if m and m not in seen:
+            seen.add(m)
+            ordered.append(m)
+    if cur in ordered:
+        i = ordered.index(cur)
+        if i + 1 < len(ordered):
+            return ordered[i + 1]
+        return None
+    return ordered[0] if ordered and ordered[0] != cur else (
+        ordered[1] if len(ordered) > 1 else None
+    )
+
+
 # Pro 深度会诊在本进程已确认不可用（免费档 limit:0 / 配额耗尽）→ 改用 Flash
 _pro_deep_unavailable = False
 _pro_deep_lock = threading.Lock()
@@ -188,12 +226,14 @@ def resolve_deep_model_and_tier(
     优先 Pro；若免费档 Pro 配额为 0 或已熔断，自动改 Flash（不花钱仍能出报告）。
     """
     if pro_deep_unavailable():
-        flash = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-2.5-flash"
-        return flash, "flash"
-    pro = (preferred_model or config.GEMINI_PRO_MODEL or PRO_MODEL).strip() or "gemini-2.5-pro"
-    if is_pro_model(pro):
-        return pro, "pro"
-    return pro, "flash"
+        flash_model = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-3.5-flash"
+        return flash_model, "flash"
+    # 免费档默认深度模型已与 Flash 对齐；若仍点名 *-pro 且可用再走 pro 档
+    preferred = (preferred_model or config.GEMINI_PRO_MODEL or PRO_MODEL).strip()
+    preferred = preferred or "gemini-3.5-flash"
+    if is_pro_model(preferred) and "flash" not in preferred.lower():
+        return preferred, "pro"
+    return preferred, "flash"
 
 def gemini_circuit_is_open(api_tier: ApiTier | None = None) -> bool:
     if api_tier is None:
@@ -335,7 +375,7 @@ def generate(
         and _allow_flash_deep_fallback
         and pro_deep_unavailable()
     ):
-        flash_model = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-2.5-flash"
+        flash_model = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-3.5-flash"
         return generate(
             system_prompt,
             user_content,
@@ -426,6 +466,29 @@ def generate(
                     f"改用 {nxt} 重试…"
                 )
                 continue
+            # 模型对新用户下线（如 gemini-2.5-flash）→ 换下一代 Flash
+            if (
+                _allow_flash_deep_fallback
+                and is_gemini_model_unavailable(exc)
+            ):
+                alt = next_flash_model(resolved_model)
+                if alt:
+                    print(
+                        f"⚠️  模型 `{resolved_model}` 不可用，改用 `{alt}` 重试…"
+                    )
+                    return generate(
+                        system_prompt,
+                        user_content,
+                        model=alt,
+                        max_tokens=max_tokens,
+                        skip_throttle=skip_throttle,
+                        response_mime_type=response_mime_type,
+                        response_json_schema=response_json_schema,
+                        thinking_budget=thinking_budget,
+                        temperature=temperature,
+                        api_tier="flash",
+                        _allow_flash_deep_fallback=True,
+                    )
             # Pro 配额耗尽（含 free tier limit:0）→ 降级 Flash，不直接整轮报废
             if (
                 tier == "pro"
@@ -435,7 +498,7 @@ def generate(
                 mark_pro_deep_unavailable(str(exc))
                 flash_model = (
                     FLASH_MODEL or config.GEMINI_FLASH_MODEL
-                ).strip() or "gemini-2.5-flash"
+                ).strip() or "gemini-3.5-flash"
                 print(
                     f"⚠️  Pro 配额不可用（{key_src}），改用 `{flash_model}` 重试…"
                 )
@@ -480,7 +543,7 @@ def generate(
         and is_gemini_quota_error(last_exc)
     ):
         mark_pro_deep_unavailable(str(last_exc))
-        flash_model = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-2.5-flash"
+        flash_model = (FLASH_MODEL or config.GEMINI_FLASH_MODEL).strip() or "gemini-3.5-flash"
         print(f"⚠️  Pro 配额不可用，改用 `{flash_model}` 重试…")
         return generate(
             system_prompt,

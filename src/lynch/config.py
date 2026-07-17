@@ -113,10 +113,10 @@ INSIDER_MIN_NET_BUYS = _env_int("INSIDER_MIN_NET_BUYS", 2)
 DAILY_PRICE_CHANGE_THRESHOLD = _env_float("DAILY_PRICE_CHANGE_THRESHOLD", 0.04)  # 日报异动触发 4%
 
 # ── 三层漏斗 · Gemini 不对称算力（免费档）────────────────────
-# Layer 2 扫射：Flash；Layer 3 / daily / 季年报终审：Pro
-# 注意：gemini-1.5-* 已关停；免费档用 2.5-flash，终审用 2.5-pro
-GEMINI_FLASH_MODEL = _env_str("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
-GEMINI_PRO_MODEL = _env_str("GEMINI_PRO_MODEL", "gemini-2.5-pro")
+# Layer 2 扫射：Flash；Layer 3 / daily / 季年报终审：优先 Pro，免费档不可用则 Flash
+# 2026-06 起：新项目不可用 gemini-2.5-*，默认改用 3.5 Flash
+GEMINI_FLASH_MODEL = _env_str("GEMINI_FLASH_MODEL", "gemini-3.5-flash")
+GEMINI_PRO_MODEL = _env_str("GEMINI_PRO_MODEL", "gemini-3.5-flash")
 # 双 Key 物理分流：Flash / Pro 各用独立 AI Studio 项目，互不抢免费 RPD。
 # 未设时 fallback 到 GEMINI_API_KEY（单 key 兼容旧 Secrets）。
 GEMINI_API_KEY = _env_str("GEMINI_API_KEY", "")
@@ -125,11 +125,11 @@ GEMINI_PRO_API_KEY = _env_str("GEMINI_PRO_API_KEY", "") or GEMINI_API_KEY
 # 兼容旧变量：未单独指定时默认 Flash（节食）
 # 注意：周报 L3 / 日报 / 季年报会强制 Pro，不受此默认影响。
 # （实际默认模型解析见 llm.py）
-# 免费档 RPM 防御：Flash≈15RPM → 4.5s；Pro≈2RPM → 32s
-GEMINI_FLASH_INTERVAL_SEC = _env_float("GEMINI_FLASH_INTERVAL_SEC", 4.5)
+# 免费档 RPM 防御：新账号 Flash 常≈5RPM → 13s；可用环境变量覆盖
+GEMINI_FLASH_INTERVAL_SEC = _env_float("GEMINI_FLASH_INTERVAL_SEC", 13.0)
 GEMINI_PRO_INTERVAL_SEC = _env_float("GEMINI_PRO_INTERVAL_SEC", 32.0)
 # 深度会诊（日报/L3）：Pro 免费配额为 0 时自动降级 Flash。设 1 则直接用 Flash，跳过 Pro。
-GEMINI_FORCE_FLASH_DEEP = _env_int("GEMINI_FORCE_FLASH_DEEP", 0) == 1
+GEMINI_FORCE_FLASH_DEEP = _env_int("GEMINI_FORCE_FLASH_DEEP", 1) == 1
 # Layer 3：held 全员 + Flash 评分 Top N（海选进阶名额 = max(0, TOTAL - held - RESERVED)）
 LAYER3_PRO_TOTAL_BUDGET = _env_int("LAYER3_PRO_TOTAL_BUDGET", 50)
 LAYER3_PRO_RESERVED = _env_int("LAYER3_PRO_RESERVED", 5)
